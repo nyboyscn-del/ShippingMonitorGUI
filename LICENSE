@@ -1,0 +1,69 @@
+ShippingMonitorGUI 双授权协议 / Dual License
+
+版权所有 (c) 2025 ShippingMonitorGUI 作者。保留所有权利。
+Copyright (c) 2025 the ShippingMonitorGUI author. All rights reserved.
+
+================================================================
+一、个人与非商业使用（免费）/ Personal & Non-Commercial Use (Free)
+================================================================
+
+个人用户以及非商业用途的使用者，可以免费使用、复制、修改本软件
+源代码，但必须遵守以下条件：
+
+1. 保留本授权文件与全部版权声明；
+2. 不得将本软件或其修改版本用于任何商业用途（见第二节定义）；
+3. 对外发布修改版本时，须注明其基于 ShippingMonitorGUI 修改，
+   不得冒充原作者作品。
+
+Individuals and non-commercial users may use, copy, and modify this
+software free of charge, provided that (1) this license and all
+copyright notices are retained, (2) the software is not used for any
+commercial purpose as defined below, and (3) modified versions are
+clearly marked as derived from ShippingMonitorGUI and are not passed
+off as the original author's work.
+
+================================================================
+二、商业使用（需付费授权）/ Commercial Use (Paid License Required)
+================================================================
+
+下列情形属于商业使用，必须事先取得作者的书面商业授权，作者有权
+收取授权费用：
+
+1. 在企业、个体工商户等经营主体的生产、发货、仓储、客服等经营
+   活动中使用本软件；
+2. 将本软件全部或部分集成、捆绑进对外销售或收费提供的产品、
+   服务或解决方案；
+3. 基于本软件（包括其修改版本）为第三方提供收费服务。
+
+Commercial use requires a separate written license from the author,
+which may be subject to a fee. Commercial use includes: use within
+any business operation (production, shipping, warehousing, customer
+service, etc.); integrating or bundling this software into products
+or services sold or provided for a fee; and providing paid services
+to third parties based on this software.
+
+商业授权咨询 / Commercial licensing inquiries:
+izchclaw@qq.com
+
+================================================================
+三、免责声明 / Disclaimer
+================================================================
+
+本软件按"原样"提供，不作任何明示或暗示的担保，包括但不限于适销
+性、特定用途适用性和不侵权的担保。作者不对因使用或无法使用本软
+件产生的任何直接或间接损失负责。
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY
+CLAIM, DAMAGES, OR OTHER LIABILITY ARISING FROM THE USE OF THE
+SOFTWARE.
+
+================================================================
+说明 / Note
+================================================================
+
+本协议为"源码开放（source-available）"授权，不属于 OSI 定义的
+开源许可证。未尽事宜以作者的书面解释为准。
+
+This is a source-available license, not an OSI-approved open-source
+license.
