@@ -6,6 +6,14 @@
 
 ShippingMonitorGUI 是一个 Windows 桌面工具，用于发货视频监控、条码触发录像、录像回放/查询，以及离线授权。
 
+## 下载
+
+免安装的 Windows 成品包：
+
+- **GitHub Releases（正式来源）：** [v1.0.0](https://github.com/nyboyscn-del/ShippingMonitorGUI/releases/tag/v1.0.0) — 下载 `ShippingMonitorGUI_v1.0.0.zip`，解压后运行 `ShippingMonitorGUI\ShippingMonitorGUI.exe`。
+- **GitCode 国内镜像：** [发行版](https://gitcode.com/nyboys/ShippingMonitorGUI/releases) — 同一个安装包，核验后在镜像侧单独发布。
+- `ShippingMonitorGUI_v1.0.0.zip` 的 SHA256：`524f41e4b75a9c408ea971d62ab75bc557b9aa258aabc257c3196cd4a7cd54ba`
+
 ## 当前入口
 
 当前正式的 GUI 入口是：
@@ -43,11 +51,7 @@ pip install -r requirements.txt
 
 ## 打包说明
 
-当前封存的试用包为：
-
-```text
-release\ShippingMonitorGUI_v1.0_trial20260521.zip
-```
+已发布的 v1.0.0 安装包由本公开源码经 `build_exe.bat` 构建，经 GitHub Releases（及 GitCode 镜像）分发。它取代了早期由私有代码树构建的封存试用包 `release\ShippingMonitorGUI_v1.0_trial20260521.zip`，该试用包不对外发布。
 
 授权私钥、已生成的授权状态、已签发的授权记录和 PEM 文件，不得提交到仓库，也不得打进客户包。
 
