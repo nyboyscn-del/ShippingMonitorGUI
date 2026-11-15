@@ -65,7 +65,7 @@ release\ShippingMonitorGUI_v1.0_trial20260521.zip
 ## 镜像与维护
 
 - **主仓：** 本 GitHub 仓库（https://github.com/nyboyscn-del/ShippingMonitorGUI）。以 `main` 为基线，维护改动走短生命周期分支。更新与评审步骤见 [CONTRIBUTING.md](CONTRIBUTING.md)。
-- **国内镜像：** [gitcode.com/nyboys/ShippingMonitorGUI](https://gitcode.com/nyboys/ShippingMonitorGUI)，供国内更快访问，并作为华为码道 CodeArts 的维护入口。镜像与主仓代码、[LICENSE](LICENSE) 和发布版本保持一致，不是另一个项目。
+- **国内镜像：** [gitcode.com/nyboys/ShippingMonitorGUI](https://gitcode.com/nyboys/ShippingMonitorGUI)，供国内更快访问，并作为华为码道 CodeArts 的维护入口。镜像同步与主仓相同的代码（分支、标签与提交）和 [LICENSE](LICENSE)，不是另一个项目；发布版本以 GitHub 为正式来源，GitCode 侧的安装包在核验后单独发布。
 - **问题反馈：** GitHub 与 GitCode 任一平台都可以提 Issue，维护方会合并处理，请只在一处提交，不要两边重复提。
 - **商用授权：** 不走任一平台的私信，只走邮箱：izchclaw@qq.com
 
