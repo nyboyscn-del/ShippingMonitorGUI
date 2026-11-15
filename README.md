@@ -65,7 +65,7 @@ This project is source-available under a dual license (see [LICENSE](LICENSE)): 
 ## Mirror & Maintenance / 镜像与维护
 
 - **Canonical repository / 主仓:** this [GitHub repository](https://github.com/nyboyscn-del/ShippingMonitorGUI). `main` is the baseline; make maintenance changes on short-lived branches. See [CONTRIBUTING.md](CONTRIBUTING.md) for the update and review steps.
-- **GitCode (AtomGit) mirror / 国内镜像:** planned — a read-sync mirror on GitCode (AtomGit) will be added for faster access in mainland China and as the maintenance entry point for Huawei CodeArts (码道). The mirror carries the same code, the same [LICENSE](LICENSE), and the same releases; it is not a separate project. The mirror URL will be filled in here once it is created.
+- **GitCode (AtomGit) mirror / 国内镜像:** [gitcode.com/nyboys/ShippingMonitorGUI](https://gitcode.com/nyboys/ShippingMonitorGUI) — a sync mirror for faster access in mainland China and as the maintenance entry point for Huawei CodeArts (码道). The mirror carries the same code, the same [LICENSE](LICENSE), and the same releases; it is not a separate project.
 - **Issues:** may be filed on either platform; maintainers triage and mirror them, so please file in one place only.
 - **Commercial licensing / 商用授权:** not handled via platform messages on either site — contact the author by email only: izchclaw@qq.com
 
