@@ -65,11 +65,11 @@ This project is source-available under a dual license (see [LICENSE](LICENSE)): 
 ## Mirror & Maintenance / 镜像与维护
 
 - **Canonical repository / 主仓:** this [GitHub repository](https://github.com/nyboyscn-del/ShippingMonitorGUI). `main` is the baseline; make maintenance changes on short-lived branches. See [CONTRIBUTING.md](CONTRIBUTING.md) for the update and review steps.
-- **GitCode (AtomGit) mirror / 国内镜像:** [gitcode.com/nyboys/ShippingMonitorGUI](https://gitcode.com/nyboys/ShippingMonitorGUI) — a sync mirror for faster access in mainland China and as the maintenance entry point for Huawei CodeArts (码道). The mirror carries the same code, the same [LICENSE](LICENSE), and the same releases; it is not a separate project.
+- **GitCode (AtomGit) mirror / 国内镜像:** [gitcode.com/nyboys/ShippingMonitorGUI](https://gitcode.com/nyboys/ShippingMonitorGUI) — a sync mirror for faster access in mainland China and as the maintenance entry point for Huawei CodeArts (码道). The mirror syncs the same code (branches, tags, and commits) and the same [LICENSE](LICENSE); it is not a separate project. Releases are published from GitHub as the canonical source; GitCode release packages are published separately after verification.
 - **Issues:** may be filed on either platform; maintainers triage and mirror them, so please file in one place only.
 - **Commercial licensing / 商用授权:** not handled via platform messages on either site — contact the author by email only: izchclaw@qq.com
 
-本项目主仓在 GitHub，GitCode（AtomGit）镜像仅作国内同步与码道维护入口，两边代码、授权与版本保持一致；问题在任一平台提一次即可，商用授权只走邮箱联系。
+本项目主仓在 GitHub，GitCode（AtomGit）镜像仅作国内同步与码道维护入口，两边代码与授权保持一致，发布版本以 GitHub 为准、GitCode 侧单独核验发布；问题在任一平台提一次即可，商用授权只走邮箱联系。
 
 Only source, maintenance documentation, and blank templates belong in Git. Local `config/config.json`, authorization/license material, customer data, logs, recordings, recovery backups, FFmpeg binaries, and generated build/release packages are excluded. The application creates `config/config.json` from `config/config.example.json` when needed.
 
