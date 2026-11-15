@@ -6,6 +6,14 @@
 
 ShippingMonitorGUI is a Windows desktop tool for shipping video monitoring, barcode-triggered recording, playback/query, and offline authorization.
 
+## Download
+
+Prebuilt Windows package (no installation required):
+
+- **GitHub Releases (canonical):** [v1.0.0](https://github.com/nyboyscn-del/ShippingMonitorGUI/releases/tag/v1.0.0) — download `ShippingMonitorGUI_v1.0.0.zip`, extract it, and run `ShippingMonitorGUI\ShippingMonitorGUI.exe`.
+- **GitCode mirror (mainland China):** [Releases](https://gitcode.com/nyboys/ShippingMonitorGUI/releases) — the same package, published on the mirror after verification.
+- SHA256 of `ShippingMonitorGUI_v1.0.0.zip`: `524f41e4b75a9c408ea971d62ab75bc557b9aa258aabc257c3196cd4a7cd54ba`
+
 ## Current Entry Point
 
 The current official GUI entry point is:
@@ -43,11 +51,7 @@ pip install -r requirements.txt
 
 ## Packaging Notes
 
-The current sealed trial package is:
-
-```text
-release\ShippingMonitorGUI_v1.0_trial20260521.zip
-```
+The published v1.0.0 package is built from this public source with `build_exe.bat` and distributed via GitHub Releases (and the GitCode mirror). It supersedes the earlier sealed trial package `release\ShippingMonitorGUI_v1.0_trial20260521.zip`, which was built from the private tree and is not published.
 
 Authorization private keys, generated license state, issued license records, and PEM files must not be committed or included in customer packages.
 
