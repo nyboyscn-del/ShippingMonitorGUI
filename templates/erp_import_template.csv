@@ -1,0 +1,2 @@
+﻿order_no,tracking_number,shop_name,buyer_name,sku,product_name,quantity,remark
+DEMO-ORDER-001,SF1234567890,示例店铺,示例客户,SKU-DEMO-001,示例商品,1,仅为模板示例，请替换

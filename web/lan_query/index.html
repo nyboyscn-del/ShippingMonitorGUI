@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>物流录像查询</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>物流录像查询</h1>
+      <p>局域网只读查询</p>
+    </div>
+    <span id="serviceStatus" class="status">未连接</span>
+  </header>
+
+  <main>
+    <section class="query-panel">
+      <label>访问令牌<input id="token" type="password" autocomplete="off"></label>
+      <label>物流单号<input id="tracking" type="text" autocomplete="off" placeholder="输入完整或部分单号"></label>
+      <label>开始日期<input id="dateFrom" type="date"></label>
+      <label>结束日期<input id="dateTo" type="date"></label>
+      <button id="searchButton" type="button">查询</button>
+    </section>
+
+    <p class="notice">仅限局域网使用。页面只提供查询、播放和下载，不支持修改或删除。</p>
+    <div id="message" class="message" aria-live="polite"></div>
+
+    <section class="results">
+      <table>
+        <thead>
+          <tr>
+            <th>录像时间</th>
+            <th>物流单号</th>
+            <th>来源</th>
+            <th>MP4</th>
+            <th>AVI</th>
+          </tr>
+        </thead>
+        <tbody id="resultBody"></tbody>
+      </table>
+    </section>
+
+    <section id="playerPanel" class="player-panel" hidden>
+      <div class="player-heading">
+        <strong id="playerTitle">MP4 播放</strong>
+        <button id="closePlayer" class="icon-button" type="button" title="关闭播放器">×</button>
+      </div>
+      <video id="player" controls preload="metadata"></video>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,62 @@
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local runtime configuration and authorization state
+/config/config.json
+/config/license.json
+/config/license_state*.json
+/config/trial_state*.json
+/temp_auth.txt
+/temp_auth_files/
+/.env
+/.env.*
+*.pem
+*.p12
+*.pfx
+*.key
+/tools/license_keys/
+/tools/issued_licenses.csv
+
+# Customer or machine-specific evidence and data
+/data/
+/recordings/
+/logs/
+/reports/
+/docs/source_license.json
+/docs/source_settings.json
+/docs/source_log_extract.txt
+
+# Recovery copies, generated builds, and release packages
+/backup/
+/backup_*/
+/backup_before_query_focus_*
+/build/
+/build_debug/
+/dist/
+/release/
+/tools/ffmpeg/
+*.log
+*.tmp
+*.bak
+*.bak_*
+*.bak_test
+*.old
+*.zip
+*.exe
+*.dll
+
+# OS/editor metadata
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/

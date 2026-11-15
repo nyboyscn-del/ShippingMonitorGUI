@@ -1,0 +1,26 @@
+ShippingMonitorGUI Camera Test Build
+
+Build date: 2026-07-16
+Purpose: Cross-PC and alternate-camera recording quality test
+Resolution target: 1920x1080
+Configured FPS: 16
+Writer codec: MJPG
+
+This build includes:
+- Writer FPS headroom adjusted to 95% of measured capture FPS.
+- Watermark blending limited to the text region.
+- Recording diagnostics for duplicate ratio, capture skips, timeline drops, and processing FPS.
+
+Local reference result (YMD-33 camera):
+- measured_capture_fps: 13.10
+- writer_fps: 12.45
+- duplicate_ratio: 1.34%
+- skipped_capture_frames: 0
+- complete decode: PASS
+
+Return for analysis:
+- recordings folder
+- logs folder
+- completed CROSS_PC_CAMERA_TEST_GUIDE.md environment section
+
+Do not return license or trial state files.
