@@ -49,9 +49,31 @@ pip install -r requirements.txt
 
 `pyzbar` is optional. Camera barcode recognition is currently marked as pending upgrade and may require additional native DLL/runtime preparation before production use.
 
+Dependency versions are pinned in `requirements.txt`; `tools\check_dependencies.py` verifies the exact installed versions before packaging.
+
+## Testing
+
+Run the release smoke suite before building or publishing:
+
+```bat
+python -m unittest discover -s tests -p "test_smoke.py" -v
+```
+
+The suite covers module imports, headless `--smoke-test-*` startup paths, LAN path traversal rejection, authorization signature and rollback checks, retention cleanup, and query-root whitelisting. It finishes in well under three minutes and is also the gate executed by `build_exe.bat`; a failed suite aborts the build.
+
 ## Packaging Notes
 
 The published v1.0.0 package is built from this public source with `build_exe.bat` and distributed via GitHub Releases (and the GitCode mirror). It supersedes the earlier sealed trial package `release\ShippingMonitorGUI_v1.0_trial20260521.zip`, which was built from the private tree and is not published.
+
+`build_exe.bat` is the single official build path. It checks the pinned dependencies, runs the smoke suite, builds with PyInstaller command-line arguments, and runs `tools\check_release_security.py` on the output. No `.spec` file is maintained in the source tree; historical wrappers and specs were moved to `tools\legacy\` for reference only.
+
+The customer package is `dist\ShippingMonitorGUI`. To copy it to a USB target and re-run the security check:
+
+```bat
+package_usb_portable.bat
+```
+
+That script copies only the built application. It never copies `config\license.json`, `data`, or `logs`, and it fails if the release security check reports a finding.
 
 Authorization private keys, generated license state, issued license records, and PEM files must not be committed or included in customer packages.
 

@@ -1,6 +1,6 @@
 @echo off
 setlocal
-cd /d D:\AI_Projects\shipping-monitor-stage1
+cd /d "%~dp0"
 
 where python >nul 2>nul
 if errorlevel 1 (
@@ -8,7 +8,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-python -m pip install opencv-python openpyxl
+python -m pip install -r requirements.txt
 if errorlevel 1 (
     echo Dependency installation failed.
     exit /b 1

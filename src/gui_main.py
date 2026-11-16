@@ -105,6 +105,7 @@ from license_code_manager import (
     get_machine_code,
     is_recording_allowed,
 )
+from safe_print import configure_runtime_logging, safe_print
 from version import __project_name__, __version__, __build__, __copyright__, release_channel
 
 
@@ -1985,7 +1986,7 @@ class ShippingMonitorWindow(QMainWindow):
         self.tools_menu.addAction(self.start_lan_query_action)
         self.tools_menu.addAction(self.stop_lan_query_action)
         self.tools_menu.addAction(self.copy_lan_query_url_action)
-        print("DEBUG: _create_menu_bar completed - tools_menu has", self.tools_menu.actions().__len__(), "actions")
+        safe_print("DEBUG: _create_menu_bar completed - tools_menu has", self.tools_menu.actions().__len__(), "actions")
 
     def set_compact_mode(self, compact: bool = True) -> None:
         self.add_log("\u5df2\u5207\u6362\u5230\u7b80\u6d01\u6a21\u5f0f" if compact else "\u5df2\u5207\u6362\u5230\u8be6\u7ec6\u6a21\u5f0f")
@@ -2125,7 +2126,7 @@ class ShippingMonitorWindow(QMainWindow):
         self.add_log(f"授权无效，已阻止录像：{reason}")
         if self._is_smoke_test_mode():
             status_text = getattr(status, "status", "read_failed")
-            print(f"smoke_recording_authorization_blocked => {status_text}: {reason}")
+            safe_print(f"smoke_recording_authorization_blocked => {status_text}: {reason}")
             return False
 
         if prompt_for_activation:
@@ -2228,7 +2229,7 @@ class ShippingMonitorWindow(QMainWindow):
 
     def _show_camera_calibration(self) -> None:
         """打开摄像头矫正设置弹窗"""
-        print("DEBUG: _show_camera_calibration triggered")
+        safe_print("DEBUG: _show_camera_calibration triggered")
         self.add_log("DEBUG: 摄像头矫正菜单点击")
         dialog = CameraCalibrationDialog(self)
         dialog.exec_()
@@ -5076,12 +5077,12 @@ class ShippingMonitorWindow(QMainWindow):
         if self.camera is not None and self.camera.is_opened() and self.recorder is not None:
             self.scan_input.setText("GUISTUDY0001")
             self.on_tracking_entered()
-            print(f"smoke_last_video_path => {self.last_video_path}")
+            safe_print(f"smoke_last_video_path => {self.last_video_path}")
             QTimer.singleShot(2500, self.close)
             return
 
         if attempt >= 12:
-            print("smoke_recording_scan => camera_not_ready")
+            safe_print("smoke_recording_scan => camera_not_ready")
             QTimer.singleShot(200, self.close)
             return
 
@@ -5096,7 +5097,7 @@ class ShippingMonitorWindow(QMainWindow):
             return
 
         if attempt >= 12:
-            print("smoke_autostop => camera_not_ready")
+            safe_print("smoke_autostop => camera_not_ready")
             QTimer.singleShot(200, self.close)
             return
 
@@ -5104,20 +5105,20 @@ class ShippingMonitorWindow(QMainWindow):
 
     def print_smoke_autostop_status(self) -> None:
         is_recording = self.recorder.is_recording() if self.recorder is not None else False
-        print(f"smoke_autostop_recording => {is_recording}")
-        print(f"smoke_autostop_status => {self.recording_status.text()}")
+        safe_print(f"smoke_autostop_recording => {is_recording}")
+        safe_print(f"smoke_autostop_status => {self.recording_status.text()}")
 
     def run_smoke_disk_scan(self, attempt: int = 0) -> None:
         if self.camera is not None and self.camera.is_opened() and self.recorder is not None:
             self.scan_input.setText("GUIDISKLOW0001")
             self.on_tracking_entered()
-            print(f"smoke_disk_status => {self.disk_status.text()}")
-            print(f"smoke_disk_last_video_path => {self.last_video_path}")
+            safe_print(f"smoke_disk_status => {self.disk_status.text()}")
+            safe_print(f"smoke_disk_last_video_path => {self.last_video_path}")
             QTimer.singleShot(500, self.close)
             return
 
         if attempt >= 12:
-            print("smoke_disk => camera_not_ready")
+            safe_print("smoke_disk => camera_not_ready")
             QTimer.singleShot(200, self.close)
             return
 
@@ -5127,37 +5128,37 @@ class ShippingMonitorWindow(QMainWindow):
         if self.config is not None:
             self.frame_failure_count = int(self.config.watchdog_max_failures) + 1
             self.update_watchdog_status()
-            print(f"smoke_watchdog_should_trigger => {self.should_trigger_watchdog()}")
+            safe_print(f"smoke_watchdog_should_trigger => {self.should_trigger_watchdog()}")
         QTimer.singleShot(400, self.close)
 
     def run_smoke_duplicate_policy_logic(self) -> None:
         if self.config is None:
-            print("smoke_duplicate_policy => config_not_loaded")
+            safe_print("smoke_duplicate_policy => config_not_loaded")
             QTimer.singleShot(200, self.close)
             return
 
         self.config = replace(self.config, duplicate_policy="block_completed_only", duplicate_block_seconds=30)
         self.apply_config_status()
         self.completed_tracking_numbers.add("DUPLICATE_COMPLETED")
-        print(f"smoke_duplicate_policy_status => {self.duplicate_policy_status.text()}")
-        print(f"smoke_duplicate_completed => {self.should_block_duplicate('DUPLICATE_COMPLETED')}")
+        safe_print(f"smoke_duplicate_policy_status => {self.duplicate_policy_status.text()}")
+        safe_print(f"smoke_duplicate_completed => {self.should_block_duplicate('DUPLICATE_COMPLETED')}")
 
         self.config = replace(self.config, duplicate_policy="block_within_seconds", duplicate_block_seconds=30)
         self.apply_config_status()
         self.tracking_last_seen["DUPLICATE_WINDOW"] = time.monotonic()
-        print(f"smoke_duplicate_window_status => {self.duplicate_policy_status.text()}")
-        print(f"smoke_duplicate_window => {self.should_block_duplicate('DUPLICATE_WINDOW')}")
+        safe_print(f"smoke_duplicate_window_status => {self.duplicate_policy_status.text()}")
+        safe_print(f"smoke_duplicate_window => {self.should_block_duplicate('DUPLICATE_WINDOW')}")
 
         self.config = replace(self.config, duplicate_policy="allow", duplicate_block_seconds=30)
         self.apply_config_status()
         self.tracking_last_seen["DUPLICATE_ALLOWED"] = time.monotonic()
-        print(f"smoke_duplicate_allow_status => {self.duplicate_policy_status.text()}")
-        print(f"smoke_duplicate_allow => {self.should_block_duplicate('DUPLICATE_ALLOWED')}")
+        safe_print(f"smoke_duplicate_allow_status => {self.duplicate_policy_status.text()}")
+        safe_print(f"smoke_duplicate_allow => {self.should_block_duplicate('DUPLICATE_ALLOWED')}")
         QTimer.singleShot(400, self.close)
 
     def run_smoke_query_logic(self) -> None:
         if cv2 is None:
-            print("smoke_query => opencv_missing")
+            safe_print("smoke_query => opencv_missing")
             QTimer.singleShot(200, self.close)
             return
 
@@ -5191,20 +5192,20 @@ class ShippingMonitorWindow(QMainWindow):
             refreshed = query.query("YT123456789", "2026-05-18", "2026-05-18", "GUI")
             csv_path = query.export_csv(refreshed, base / "query_results.csv")
             xlsx_path = query.export_excel(refreshed, base / "query_results.xlsx")
-            print(f"smoke_query_count => {len(results)}")
-            print(f"smoke_query_mp4 => {mp4_path}")
-            print(f"smoke_query_mp4_exists => {mp4_path.exists()}")
-            print(f"smoke_query_mp4_readable => {mp4_readable}")
-            print(f"smoke_query_csv => {csv_path.exists()}")
-            print(f"smoke_query_excel => {xlsx_path.exists()}")
-            print(f"smoke_query_json => {query.query_json('YT123456789', '2026-05-18', '2026-05-18', 'GUI')}")
+            safe_print(f"smoke_query_count => {len(results)}")
+            safe_print(f"smoke_query_mp4 => {mp4_path}")
+            safe_print(f"smoke_query_mp4_exists => {mp4_path.exists()}")
+            safe_print(f"smoke_query_mp4_readable => {mp4_readable}")
+            safe_print(f"smoke_query_csv => {csv_path.exists()}")
+            safe_print(f"smoke_query_excel => {xlsx_path.exists()}")
+            safe_print(f"smoke_query_json => {query.query_json('YT123456789', '2026-05-18', '2026-05-18', 'GUI')}")
         except Exception as exc:
-            print(f"smoke_query_failed => {exc}")
+            safe_print(f"smoke_query_failed => {exc}")
         QTimer.singleShot(300, self.close)
 
     def run_smoke_frame_idle_logic(self) -> None:
         if cv2 is None:
-            print("smoke_frame_idle => opencv_missing")
+            safe_print("smoke_frame_idle => opencv_missing")
             QTimer.singleShot(200, self.close)
             return
 
@@ -5235,22 +5236,22 @@ class ShippingMonitorWindow(QMainWindow):
             self.frame_idle_started_at = time.monotonic() - 3
             self.update_frame_motion_state(static_frame)
             static_increased = self.frame_idle_seconds >= 2
-            print(f"smoke_frame_idle_static_increased => {static_increased}")
+            safe_print(f"smoke_frame_idle_static_increased => {static_increased}")
 
             self.update_frame_motion_state(changed_frame)
             reset_after_motion = self.frame_idle_seconds == 0 and not self.frame_is_static
-            print(f"smoke_frame_idle_reset_on_motion => {reset_after_motion}")
+            safe_print(f"smoke_frame_idle_reset_on_motion => {reset_after_motion}")
 
             self.recorder = FakeRecorder()  # type: ignore[assignment]
             self.last_scan_monotonic = time.monotonic() - 2
             self.frame_idle_seconds = 0
-            print(f"smoke_frame_idle_no_stop_when_motion => {not self.should_auto_stop_now()}")
+            safe_print(f"smoke_frame_idle_no_stop_when_motion => {not self.should_auto_stop_now()}")
 
             self.frame_idle_seconds = 3
-            print(f"smoke_frame_idle_stop_when_static => {self.should_auto_stop_now()}")
+            safe_print(f"smoke_frame_idle_stop_when_static => {self.should_auto_stop_now()}")
             self.recorder = None
         except Exception as exc:
-            print(f"smoke_frame_idle_failed => {exc}")
+            safe_print(f"smoke_frame_idle_failed => {exc}")
         QTimer.singleShot(300, self.close)
 
     def closeEvent(self, event) -> None:
@@ -5264,6 +5265,7 @@ class ShippingMonitorWindow(QMainWindow):
 
 
 def main() -> int:
+    configure_runtime_logging()
     app = QApplication(sys.argv)
     window = ShippingMonitorWindow()
     window.show()

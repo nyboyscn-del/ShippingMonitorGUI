@@ -13,6 +13,8 @@ from pathlib import Path
 
 from camera_manager import CameraManager, cv2
 
+from safe_print import safe_print
+
 
 LOW_DISK_BLOCKED_MESSAGE = "Disk free space too low, recording blocked."
 LOW_DISK_STOPPED_MESSAGE = "Disk free space too low, recording stopped."
@@ -404,7 +406,7 @@ class RecordingManager:
             self._stop_recording_locked()
 
             if not has_min_free_disk_space(self.storage_path, self.min_free_disk_gb):
-                print(LOW_DISK_BLOCKED_MESSAGE)
+                safe_print(LOW_DISK_BLOCKED_MESSAGE)
                 logging.error(LOW_DISK_BLOCKED_MESSAGE)
                 raise RuntimeError(LOW_DISK_BLOCKED_MESSAGE)
 
@@ -727,7 +729,7 @@ class RecordingManager:
                 if now - last_disk_check >= 1:
                     last_disk_check = now
                     if not has_min_free_disk_space(self.storage_path, self.min_free_disk_gb):
-                        print(LOW_DISK_STOPPED_MESSAGE)
+                        safe_print(LOW_DISK_STOPPED_MESSAGE)
                         logging.error(LOW_DISK_STOPPED_MESSAGE)
                         self._stop_event.set()
                         break

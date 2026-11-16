@@ -19,6 +19,8 @@ except ImportError:  # pragma: no cover - depends on local runtime
 
 from recording_manager import build_mp4_path, convert_avi_to_mp4
 
+from safe_print import safe_print
+
 
 # TESING PREFIXES TO EXCLUDE (test/smoke/demo/debug/auto/dummy)
 _TEST_PREFIXES = ("TEST", "DEMO", "SAMPLE", "DEBUG", "SMOKE", "GUI", "AUTO", "DUMMY")
@@ -677,7 +679,7 @@ class QueryManager:
 
     def _log(self, message: str) -> None:
         self.logger.info(message)
-        print(f"[QueryManager] {message}")
+        safe_print(f"[QueryManager] {message}")
 
     def _parse_date(self, value: str, end_of_day: bool = False) -> datetime | None:
         text = (value or "").strip()

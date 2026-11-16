@@ -1,3 +1,9 @@
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
+from safe_print import safe_print
+
 path = r'D:\AI_Projects\shipping-monitor-gui-final\src\gui_main.py'
 with open(path, 'rb') as f:
     data = f.read()
@@ -12,18 +18,18 @@ if idx != -1:
     if line_end == -1:
         line_end = len(data)
     old_line = data[line_start:line_end]
-    print('Old line bytes:', old_line)
-    print('Old line repr:', repr(old_line))
+    safe_print('Old line bytes:', old_line)
+    safe_print('Old line repr:', repr(old_line))
     
     # New line with correct UTF-8
     new_line = '            self.add_log(f"ERROR: on_start_clicked 异常: {e}")\n'.encode('utf-8')
-    print('New line bytes:', new_line)
+    safe_print('New line bytes:', new_line)
     
     # Replace
     data = data[:line_start] + new_line + data[line_end:]
     
     with open(path, 'wb') as f:
         f.write(data)
-    print('Fixed!')
+    safe_print('Fixed!')
 else:
-    print('Pattern not found')
+    safe_print('Pattern not found')

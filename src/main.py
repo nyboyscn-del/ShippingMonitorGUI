@@ -14,6 +14,8 @@ from config_manager import PROJECT_ROOT, get_config, validate_license
 from excel_manager import ExcelManager
 from recording_manager import RecordingManager, should_auto_stop_recording
 
+from safe_print import safe_print
+
 
 AUTO_STOP_MESSAGE = "Auto stop recording after idle timeout."
 
@@ -22,13 +24,15 @@ def setup_logging() -> None:
     log_dir = PROJECT_ROOT / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_file = log_dir / "stage1_runtime.log"
+    handlers = [
+        RotatingFileHandler(log_file, maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8"),
+    ]
+    if sys.stdout is not None:
+        handlers.append(logging.StreamHandler(sys.stdout))
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(levelname)s - %(message)s",
-        handlers=[
-            RotatingFileHandler(log_file, maxBytes=5 * 1024 * 1024, backupCount=5, encoding="utf-8"),
-            logging.StreamHandler(sys.stdout),
-        ],
+        handlers=handlers,
     )
 
 
@@ -47,7 +51,7 @@ def ensure_runtime_dirs(config) -> None:
                 f"Warning: storage path {config.storage_path} has only {free_gb:.2f} GB free. "
                 f"Minimum configured free space is {config.min_free_disk_gb:.2f} GB."
             )
-            print(warning)
+            safe_print(warning)
             logging.warning(warning)
     except OSError as exc:
         logging.warning("Could not prepare or inspect storage path %s: %s", config.storage_path, exc)
@@ -90,7 +94,7 @@ def main() -> int:
         config = get_config()
     except Exception as exc:
         logging.exception("Could not load config.")
-        print(f"Config load failed: {exc}")
+        safe_print(f"Config load failed: {exc}")
         return 1
 
     ensure_runtime_dirs(config)
@@ -98,8 +102,8 @@ def main() -> int:
     license_ok, license_message = validate_license(config.license_path)
     if not license_ok:
         logging.error(license_message)
-        print(f"License validation failed: {license_message}")
-        print("Please place a valid license.json in the config directory and retry.")
+        safe_print(f"License validation failed: {license_message}")
+        safe_print("Please place a valid license.json in the config directory and retry.")
         return 1
     logging.info(license_message)
 
@@ -107,12 +111,12 @@ def main() -> int:
         excel = ExcelManager(config.excel_path)
     except Exception as exc:
         logging.exception("Could not initialize Excel file.")
-        print(f"Excel initialization failed: {exc}")
+        safe_print(f"Excel initialization failed: {exc}")
         return 1
 
     camera = CameraManager(config.camera_index, config.resolution_size, config.fps, config.storage_path)
     if not camera.open():
-        print(f"Camera start failed: {camera.state.last_error}")
+        safe_print(f"Camera start failed: {camera.state.last_error}")
         return 1
 
     recorder = RecordingManager(
@@ -134,19 +138,19 @@ def main() -> int:
             mark_scan()
             video_path = recorder.switch_segment(tracking_number)
             excel.append_record(tracking_number, video_path, source=source)
-            print(f"Recorded: {tracking_number} -> {video_path}")
+            safe_print(f"Recorded: {tracking_number} -> {video_path}")
             logging.info("Processed tracking number: %s", tracking_number)
         except Exception as exc:
             logging.exception("Failed to process tracking number: %s", tracking_number)
-            print(f"Failed to process tracking number {tracking_number}: {exc}")
+            safe_print(f"Failed to process tracking number {tracking_number}: {exc}")
 
     try:
         if config.enable_scanner:
             listener.listen_forever(on_barcode)
         else:
-            print("Scanner listener is disabled in config.")
+            safe_print("Scanner listener is disabled in config.")
     except KeyboardInterrupt:
-        print("\nExit requested. Closing recorder and camera safely...")
+        safe_print("\nExit requested. Closing recorder and camera safely...")
         logging.info("Interrupted by user.")
     finally:
         auto_stop_event.set()

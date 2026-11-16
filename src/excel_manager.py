@@ -9,6 +9,8 @@ from openpyxl import Workbook, load_workbook
 
 from query_manager import get_invalid_tracking_reason, normalize_tracking_number
 
+from safe_print import safe_print
+
 
 HEADERS = ["time", "tracking_number", "video_path", "source", "remark", "label_image_path"]
 
@@ -74,12 +76,12 @@ class ExcelManager:
         except PermissionError:
             logging.exception("Excel file is busy, writing backup CSV record: %s", tracking_number)
             self._append_backup_csv(row)
-            print(f"Excel file is busy. Record was saved to backup CSV: {self._backup_csv_path()}")
+            safe_print(f"Excel file is busy. Record was saved to backup CSV: {self._backup_csv_path()}")
             return "backup_csv"
         except Exception:
             logging.exception("Failed to append Excel record, writing backup CSV record: %s", tracking_number)
             self._append_backup_csv(row)
-            print(f"Excel write failed. Record was saved to backup CSV: {self._backup_csv_path()}")
+            safe_print(f"Excel write failed. Record was saved to backup CSV: {self._backup_csv_path()}")
             return "backup_csv"
 
     def update_label_image_path(

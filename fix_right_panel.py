@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
+from safe_print import safe_print
+
 """Fix right-side panel layout in gui_main.py: no scroll, compact, fixed visible."""
 
 import re
@@ -298,4 +304,4 @@ assert old_buttons not in content, "ERROR: old _create_button_panel still presen
 with open(filepath, "w", encoding="utf-8") as f:
     f.write(content)
 
-print("All 4 methods replaced successfully.")
+safe_print("All 4 methods replaced successfully.")

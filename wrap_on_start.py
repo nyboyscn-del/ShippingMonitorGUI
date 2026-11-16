@@ -1,3 +1,9 @@
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
+from safe_print import safe_print
+
 path = r'D:\AI_Projects\shipping-monitor-gui-final\src\gui_main.py'
 with open(path, 'r', encoding='utf-8') as f:
     lines = f.readlines()
@@ -21,13 +27,13 @@ for i, line in enumerate(lines):
 if func_end == -1:
     func_end = len(lines)
 
-print(f'on_start_clicked: lines {func_start+1} to {func_end}')
+safe_print(f'on_start_clicked: lines {func_start+1} to {func_end}')
 
 # Check if already wrapped
 func_lines = lines[func_start:func_end]
 func_text = ''.join(func_lines)
 if 'try:' in func_text and 'except Exception' in func_text:
-    print('Already wrapped, skipping')
+    safe_print('Already wrapped, skipping')
 else:
     # Wrap: add try after def line, indent body, add except at end
     # The function body starts at func_start+1
@@ -63,8 +69,8 @@ else:
     for k, eline in enumerate(except_block):
         lines.insert(func_end + k, eline)
     
-    print('Wrapped on_start_clicked with try/except')
+    safe_print('Wrapped on_start_clicked with try/except')
 
 with open(path, 'w', encoding='utf-8') as f:
     f.writelines(lines)
-print('Done')
+safe_print('Done')

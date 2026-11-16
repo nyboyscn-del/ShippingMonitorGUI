@@ -1,3 +1,9 @@
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
+from safe_print import safe_print
+
 path = r'D:\AI_Projects\shipping-monitor-gui-final\src\gui_main.py'
 with open(path, 'r', encoding='utf-8') as f:
     lines = f.readlines()
@@ -10,10 +16,10 @@ for i, line in enumerate(lines):
         break
 
 if start_idx is None:
-    print('ERROR: update_preview_frame not found')
+    safe_print('ERROR: update_preview_frame not found')
     exit(1)
 
-print(f'Found update_preview_frame at line {start_idx+1}')
+safe_print(f'Found update_preview_frame at line {start_idx+1}')
 
 # Find end of method (next def or end of file)
 end_idx = len(lines)
@@ -22,7 +28,7 @@ for i in range(start_idx + 1, len(lines)):
         end_idx = i
         break
 
-print(f'Method spans lines {start_idx+1} to {end_idx}')
+safe_print(f'Method spans lines {start_idx+1} to {end_idx}')
 
 # Extract method lines
 method_lines = lines[start_idx:end_idx]
@@ -39,14 +45,14 @@ for i in range(1, len(method_lines)):
         continue
 
 if body_start is None:
-    print('ERROR: Could not find method body')
+    safe_print('ERROR: Could not find method body')
     exit(1)
 
-print(f'Body starts at relative line {body_start+1}')
+safe_print(f'Body starts at relative line {body_start+1}')
 
 # Check if already wrapped
 if 'try:' in method_lines[body_start]:
-    print('Already wrapped with try/except, skipping')
+    safe_print('Already wrapped with try/except, skipping')
 else:
     # Insert try: before body
     method_lines.insert(body_start, '        try:\n')
@@ -70,9 +76,9 @@ else:
     
     with open(path, 'w', encoding='utf-8') as f:
         f.writelines(lines)
-    print('Successfully wrapped update_preview_frame with try/except')
+    safe_print('Successfully wrapped update_preview_frame with try/except')
 
 # Verify
-print('\nVerification:')
+safe_print('\nVerification:')
 for i in range(max(0, start_idx-2), min(len(lines), start_idx+10)):
-    print(f'{i+1}: {lines[i]}', end='')
+    safe_print(f'{i+1}: {lines[i]}', end='')

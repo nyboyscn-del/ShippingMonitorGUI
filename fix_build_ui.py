@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
+from safe_print import safe_print
+
 """Replace _build_ui() in gui_main.py with corrected layout."""
 
 import re
@@ -88,4 +94,4 @@ content = re.sub(pattern, replacement, content, flags=re.DOTALL)
 with open(filepath, "w", encoding="utf-8") as f:
     f.write(content)
 
-print("Done! _build_ui() replaced.")
+safe_print("Done! _build_ui() replaced.")

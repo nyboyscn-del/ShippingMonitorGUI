@@ -49,9 +49,31 @@ pip install -r requirements.txt
 
 `pyzbar` 为可选依赖。摄像头条码识别目前标记为待升级，正式使用前可能需要额外的原生 DLL/运行时准备。
 
+依赖版本已在 `requirements.txt` 中锁定；`tools\check_dependencies.py` 在打包前校验实际安装版本。
+
+## 测试
+
+构建或发布前运行冒烟测试集：
+
+```bat
+python -m unittest discover -s tests -p "test_smoke.py" -v
+```
+
+该测试集覆盖模块导入、无摄像头的 `--smoke-test-*` 启动路径、LAN 路径穿越拦截、授权签名与系统时间回拨检查、过期录像清理和查询白名单，可在三分钟内跑完。它同时是 `build_exe.bat` 的发布门禁，测试不通过则中止构建。
+
 ## 打包说明
 
 已发布的 v1.0.0 安装包由本公开源码经 `build_exe.bat` 构建，经 GitHub Releases（及 GitCode 镜像）分发。它取代了早期由私有代码树构建的封存试用包 `release\ShippingMonitorGUI_v1.0_trial20260521.zip`，该试用包不对外发布。
+
+`build_exe.bat` 是唯一的正式构建入口：依次执行锁定依赖检查、冒烟测试、PyInstaller 命令行构建和 `tools\check_release_security.py` 发布安全检查。源码树不再维护 `.spec` 文件，历史包装脚本与 spec 已移入 `tools\legacy\`，仅供查阅。
+
+客户包即 `dist\ShippingMonitorGUI`。如需复制到 U 盘并复核安全检查：
+
+```bat
+package_usb_portable.bat
+```
+
+该脚本只复制构建产物，不会复制 `config\license.json`、`data` 或 `logs`；安全检查发现问题时直接失败。
 
 授权私钥、已生成的授权状态、已签发的授权记录和 PEM 文件，不得提交到仓库，也不得打进客户包。
 

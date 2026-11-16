@@ -3,7 +3,11 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from safe_print import safe_print
 
 
 BLOCKED_FILE_MARKERS = (
@@ -123,17 +127,17 @@ def main() -> int:
     args = parser.parse_args()
     root = Path(args.root).resolve()
     if not root.exists():
-        print(f"FAIL: release path does not exist: {root}")
+        safe_print(f"FAIL: release path does not exist: {root}")
         return 1
 
     findings = check_release(root)
     if findings:
-        print("FAIL: sensitive supplier files or key material were found.")
+        safe_print("FAIL: sensitive supplier files or key material were found.")
         for finding in findings:
-            print("- " + finding)
+            safe_print("- " + finding)
         return 1
 
-    print(f"PASS: release security checks passed under {root}; lan_query_token status: EMPTY")
+    safe_print(f"PASS: release security checks passed under {root}; lan_query_token status: EMPTY")
     return 0
 
 

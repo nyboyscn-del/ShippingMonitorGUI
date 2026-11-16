@@ -18,6 +18,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from safe_print import safe_print
+
 try:
     from cryptography.exceptions import InvalidSignature
     from cryptography.hazmat.primitives import hashes, serialization
@@ -861,16 +863,16 @@ def is_recording_allowed(
 
 
 def _print_result(result: LicenseVerifyResult | LicenseStatus) -> None:
-    print(f"ok={result.ok}")
-    print(f"status={result.status}")
-    print(f"message={result.message}")
-    print(f"customer={result.customer or '--'}")
-    print(f"edition={result.edition or '--'}")
-    print(f"expires_at={result.expires_at or '--'}")
+    safe_print(f"ok={result.ok}")
+    safe_print(f"status={result.status}")
+    safe_print(f"message={result.message}")
+    safe_print(f"customer={result.customer or '--'}")
+    safe_print(f"edition={result.edition or '--'}")
+    safe_print(f"expires_at={result.expires_at or '--'}")
     if isinstance(result, LicenseStatus):
         machine_text = "--" if result.machine_matches is None else str(result.machine_matches)
-        print(f"machine_matches={machine_text}")
-    print("features=" + json.dumps(result.features, ensure_ascii=False, sort_keys=True))
+        safe_print(f"machine_matches={machine_text}")
+    safe_print("features=" + json.dumps(result.features, ensure_ascii=False, sort_keys=True))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -884,10 +886,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.machine_code:
         machine_code, low_stability, stable_count = get_machine_code_info()
-        print(f"machine_code={machine_code}")
-        print(f"machine_code_display={format_machine_code(machine_code)}")
-        print(f"stable_component_count={stable_count}")
-        print(f"low_stability_warning={low_stability}")
+        safe_print(f"machine_code={machine_code}")
+        safe_print(f"machine_code_display={format_machine_code(machine_code)}")
+        safe_print(f"stable_component_count={stable_count}")
+        safe_print(f"low_stability_warning={low_stability}")
         return 0
     if args.status:
         result = get_license_status()
@@ -901,7 +903,7 @@ def main(argv: list[str] | None = None) -> int:
     result = activate_with_code(args.activate)
     _print_result(result)
     if result.ok:
-        print(f"license_state={LICENSE_STATE_PATH}")
+        safe_print(f"license_state={LICENSE_STATE_PATH}")
     return 0 if result.ok else 1
 
 

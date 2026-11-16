@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
+from safe_print import safe_print
+
 """Keep only the LAST _build_ui() in gui_main.py, remove all earlier duplicates."""
 
 import re
@@ -11,10 +17,10 @@ with open(filepath, "r", encoding="utf-8") as f:
 # Find all line indices where "    def _build_ui(self)" occurs
 indices = [i for i, line in enumerate(lines) if line.rstrip() == "    def _build_ui(self) -> None:"]
 
-print(f"Found {len(indices)} occurrences at lines: {[i+1 for i in indices]}")
+safe_print(f"Found {len(indices)} occurrences at lines: {[i+1 for i in indices]}")
 
 if len(indices) <= 1:
-    print("No duplicates found, exiting.")
+    safe_print("No duplicates found, exiting.")
     exit(0)
 
 # Keep only the LAST occurrence
@@ -45,7 +51,7 @@ for i in range(last_start, len(lines)):
         break
     last_build_ui_lines.append(line)
 
-print(f"Last _build_ui: lines {last_start+1} to {last_start+len(last_build_ui_lines)}")
+safe_print(f"Last _build_ui: lines {last_start+1} to {last_start+len(last_build_ui_lines)}")
 
 # Now reconstruct the file:
 # Everything before the FIRST _build_ui + the last _build_ui + everything after the last _build_ui
@@ -66,5 +72,5 @@ new_lines.extend(lines[last_end:])
 with open(filepath, "w", encoding="utf-8") as f:
     f.writelines(new_lines)
 
-print(f"Done! Removed {len(indices)-1} duplicate(s).")
-print(f"New file: {len(new_lines)} lines (was {len(lines)} lines)")
+safe_print(f"Done! Removed {len(indices)-1} duplicate(s).")
+safe_print(f"New file: {len(new_lines)} lines (was {len(lines)} lines)")

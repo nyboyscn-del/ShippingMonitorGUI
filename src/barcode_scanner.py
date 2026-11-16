@@ -10,6 +10,8 @@ OpenCV BarcodeDetector 作为兜底方案。
 
 import time
 
+from safe_print import safe_print
+
 import cv2
 
 # ── Safe top-level import: catch ALL exceptions ──
@@ -46,18 +48,18 @@ class BarcodeScanner:
     def _log_backend_status(self) -> None:
         """Print backend status once (called from __init__)."""
         if PYZBAR_AVAILABLE:
-            print("[BarcodeScanner] Using pyzbar for barcode detection")
+            safe_print("[BarcodeScanner] Using pyzbar for barcode detection")
         else:
             if PYZBAR_IMPORT_ERROR:
-                print(f"[BarcodeScanner] pyzbar unavailable: {PYZBAR_IMPORT_ERROR}")
+                safe_print(f"[BarcodeScanner] pyzbar unavailable: {PYZBAR_IMPORT_ERROR}")
             else:
-                print("[BarcodeScanner] pyzbar not installed")
+                safe_print("[BarcodeScanner] pyzbar not installed")
             if self._opencv_barcode_available():
-                print("[BarcodeScanner] Using OpenCV BarcodeDetector as fallback")
+                safe_print("[BarcodeScanner] Using OpenCV BarcodeDetector as fallback")
             elif hasattr(cv2, "QRCodeDetector"):
-                print("[BarcodeScanner] Using OpenCV QRCodeDetector as fallback")
+                safe_print("[BarcodeScanner] Using OpenCV QRCodeDetector as fallback")
             else:
-                print("[BarcodeScanner] WARNING: No barcode detector available")
+                safe_print("[BarcodeScanner] WARNING: No barcode detector available")
 
     def _opencv_barcode_available(self) -> bool:
         """Check if OpenCV BarcodeDetector is available."""
@@ -77,7 +79,7 @@ class BarcodeScanner:
                 self._opencv_detector = cv2.barcode.BarcodeDetector()
         except Exception as e:
             self._opencv_detector = None
-            print(f"[BarcodeScanner] OpenCV BarcodeDetector init failed: {e}")
+            safe_print(f"[BarcodeScanner] OpenCV BarcodeDetector init failed: {e}")
 
     def get_backend_status(self) -> dict:
         """
@@ -121,7 +123,7 @@ class BarcodeScanner:
                 return None
 
             if not apply_debounce:
-                print(f"[BarcodeScanner] Barcode detected: {code}")
+                safe_print(f"[BarcodeScanner] Barcode detected: {code}")
                 return code
 
             # 防抖：同一条码在 debounce_sec 内不重复触发
@@ -129,12 +131,12 @@ class BarcodeScanner:
             if code != self.last_code or now - self.last_time > self.debounce_sec:
                 self.last_code = code
                 self.last_time = now
-                print(f"[BarcodeScanner] Barcode detected: {code}")
+                safe_print(f"[BarcodeScanner] Barcode detected: {code}")
                 return code
             return None
 
         except Exception as e:
-            print(f"ERROR: Barcode detection failed: {e}")
+            safe_print(f"ERROR: Barcode detection failed: {e}")
             return None
 
     def _detect_pyzbar(self, frame) -> str | None:
@@ -149,7 +151,7 @@ class BarcodeScanner:
                         return data
             return None
         except Exception as e:
-            print(f"[BarcodeScanner] pyzbar error: {e}")
+            safe_print(f"[BarcodeScanner] pyzbar error: {e}")
             return None
 
     def _detect_opencv_barcode(self, frame) -> str | None:
@@ -172,7 +174,7 @@ class BarcodeScanner:
             code = str(decoded_info[0]).strip() if isinstance(decoded_info, list) else str(decoded_info).strip()
             return code if code else None
         except Exception as e:
-            print(f"[BarcodeScanner] OpenCV BarcodeDetector error: {e}")
+            safe_print(f"[BarcodeScanner] OpenCV BarcodeDetector error: {e}")
             return None
 
     def _detect_opencv_qrcode(self, frame) -> str | None:
@@ -186,7 +188,7 @@ class BarcodeScanner:
                 return str(data).strip()
             return None
         except Exception as e:
-            print(f"[BarcodeScanner] OpenCV QRCodeDetector error: {e}")
+            safe_print(f"[BarcodeScanner] OpenCV QRCodeDetector error: {e}")
             return None
 
     def set_debounce(self, sec: float) -> None:

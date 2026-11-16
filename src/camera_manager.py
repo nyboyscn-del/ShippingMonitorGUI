@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from safe_print import safe_print
+
 import numpy as np
 
 try:
@@ -93,7 +95,7 @@ class CameraManager:
                             return True
 
         self.state = CameraState(False, self._camera_failure_message())
-        print(self.state.last_error)
+        safe_print(self.state.last_error)
         logging.error(self.state.last_error)
         return False
 
@@ -231,7 +233,7 @@ class CameraManager:
                 f"settings_source={self.settings_source}, "
                 f"lens_correction={'on' if self.enable_lens_correction else 'off'}"
             )
-            print(message)
+            safe_print(message)
             logging.info(message)
             if measured_fps < 10:
                 logging.warning(

@@ -8,6 +8,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from safe_print import safe_print
+
 try:
     from cryptography.hazmat.primitives import hashes, serialization
     from cryptography.hazmat.primitives.asymmetric import padding, rsa
@@ -67,8 +70,8 @@ def ensure_dev_keys() -> tuple[Path, Path]:
             serialization.PublicFormat.SubjectPublicKeyInfo,
         )
     )
-    print("[WARN] New development RSA keys were generated.")
-    print("[WARN] Embed the matching public key into src/license_code_manager.py before using these codes.")
+    safe_print("[WARN] New development RSA keys were generated.")
+    safe_print("[WARN] Embed the matching public key into src/license_code_manager.py before using these codes.")
     return PRIVATE_KEY_DEV_PATH, PUBLIC_KEY_DEV_PATH
 
 
@@ -182,18 +185,18 @@ def main(argv: list[str] | None = None) -> int:
         payload = build_payload(args)
         authorization_code, key_type = sign_payload(payload, use_dev_key=args.dev_key)
     except Exception as exc:  # noqa: BLE001
-        print(f"error={exc}", file=sys.stderr)
+        safe_print(f"error={exc}", file=sys.stderr)
         return 1
 
     code_hash = hashlib.sha256(authorization_code.encode("utf-8")).hexdigest()
     append_issue_record(payload, code_hash, key_type)
-    print("authorization_code=" + authorization_code)
-    print("customer=" + payload["customer"])
-    print("edition=" + payload["edition"])
-    print("expires_at=" + (payload["expires_at"] or "--"))
-    print("code_hash=" + code_hash)
-    print("key_type=" + key_type)
-    print("issued_licenses=" + str(ISSUED_LICENSES_PATH))
+    safe_print("authorization_code=" + authorization_code)
+    safe_print("customer=" + payload["customer"])
+    safe_print("edition=" + payload["edition"])
+    safe_print("expires_at=" + (payload["expires_at"] or "--"))
+    safe_print("code_hash=" + code_hash)
+    safe_print("key_type=" + key_type)
+    safe_print("issued_licenses=" + str(ISSUED_LICENSES_PATH))
     return 0
 
 

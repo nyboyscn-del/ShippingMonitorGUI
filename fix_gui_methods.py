@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
+from safe_print import safe_print
+
 """Fix gui_main.py: remove unused methods, add _toggle_log_visibility."""
 
 import re
@@ -45,4 +51,4 @@ content = content.replace(insert_after, insert_after + new_method)
 with open(filepath, "w", encoding="utf-8") as f:
     f.write(content)
 
-print("Done! Methods updated.")
+safe_print("Done! Methods updated.")

@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
+from safe_print import safe_print
+
 """Simplify Settings menu and add Camera Calibration dialog."""
 
 filepath = r"D:\AI_Projects\shipping-monitor-gui-final\src\gui_main.py"
@@ -137,11 +143,11 @@ if old_show_about in content:
     if match:
         actual_old = match.group(1)
         content = content.replace(actual_old, new_show_about)
-        print(f"Replaced show_about_dialog using regex match")
+        safe_print(f"Replaced show_about_dialog using regex match")
     else:
         raise AssertionError("ERROR: could not find show_about_dialog to replace")
 
 with open(filepath, "w", encoding="utf-8") as f:
     f.write(content)
 
-print("Menu simplification and camera calibration added successfully.")
+safe_print("Menu simplification and camera calibration added successfully.")

@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
+from safe_print import safe_print
+
 """
 Fix gui_main.py structure:
 1. Find all methods that belong to the main window class
@@ -60,7 +66,7 @@ with open(filepath, "r", encoding="utf-8") as f:
 
 # Let me search for "class ConfigDialog" and "def _build_ui" again
 config_dialog_match = re.search(r"class ConfigDialog\(QDialog\):", content)
-print(f"ConfigDialog starts at position: {config_dialog_match.start()}")
+safe_print(f"ConfigDialog starts at position: {config_dialog_match.start()}")
 
 # Find the _build_ui inside ConfigDialog
 # Actually, let me use a simpler approach.
@@ -86,13 +92,13 @@ print(f"ConfigDialog starts at position: {config_dialog_match.start()}")
 
 # Let me just read the file and understand its structure manually.
 
-print("This script needs manual review. Let me output the file structure.")
+safe_print("This script needs manual review. Let me output the file structure.")
 # Print lines around ConfigDialog
 lines = content.split('\n')
 for i, line in enumerate(lines):
     if i < 5:
-        print(f"{i+1}: {line}")
+        safe_print(f"{i+1}: {line}")
     elif "class ConfigDialog" in line or "def _build_ui" in line or "class FakeRecorder" in line or "def main" in line:
-        print(f"{i+1}: {line}")
+        safe_print(f"{i+1}: {line}")
     elif i > 210 and i < 240:
-        print(f"{i+1}: {line}")
+        safe_print(f"{i+1}: {line}")

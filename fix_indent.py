@@ -1,3 +1,9 @@
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "src"))
+from safe_print import safe_print
+
 path = r'D:\AI_Projects\shipping-monitor-gui-final\src\gui_main.py'
 with open(path, 'r', encoding='utf-8') as f:
     content = f.read()
@@ -5,7 +11,7 @@ with open(path, 'r', encoding='utf-8') as f:
 # Find on_camera_calibration_clicked function
 start = content.find('    def on_camera_calibration_clicked(self) -> None:')
 if start == -1:
-    print('Function not found!')
+    safe_print('Function not found!')
     exit(1)
 
 # Find end of function
@@ -14,9 +20,9 @@ if next_def == -1:
     next_def = len(content)
 
 func = content[start:next_def]
-print('Current function:')
-print(func)
-print('---')
+safe_print('Current function:')
+safe_print(func)
+safe_print('---')
 
 # The correct function with proper indentation:
 new_func = '''    def on_camera_calibration_clicked(self) -> None:
@@ -47,4 +53,4 @@ content = content[:start] + new_func + content[next_def:]
 
 with open(path, 'w', encoding='utf-8') as f:
     f.write(content)
-print('Fixed on_camera_calibration_clicked indentation')
+safe_print('Fixed on_camera_calibration_clicked indentation')

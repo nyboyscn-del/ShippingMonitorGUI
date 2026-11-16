@@ -20,6 +20,16 @@ if errorlevel 1 (
     exit /b 1
 )
 
+REM Release gate: the smoke suite must pass before any package is produced.
+echo [ShippingMonitorGUI] Running release smoke tests...
+set "QT_QPA_PLATFORM=offscreen"
+python -m unittest discover -s tests -p "test_smoke.py" -v
+if errorlevel 1 (
+    echo [ERROR] Release smoke tests failed. Build aborted.
+    if not "%AUTO_MODE%"=="1" pause
+    exit /b 1
+)
+
 REM Check that the config folder exists before packaging.
 if not exist "config" (
     echo [ERROR] config directory was not found.
@@ -47,8 +57,8 @@ REM Check PyInstaller before deleting build outputs.
 python -c "import PyInstaller" >nul 2>nul
 if errorlevel 1 (
     echo [ERROR] PyInstaller was not found in the current Python environment.
-    echo Install it first with:
-    echo   python -m pip install pyinstaller
+    echo Install the pinned dependencies first with:
+    echo   python -m pip install -r requirements.txt
     if not "%AUTO_MODE%"=="1" pause
     exit /b 1
 )
