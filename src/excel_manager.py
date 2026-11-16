@@ -48,7 +48,7 @@ class ExcelManager:
         remark: str = "",
         timestamp: datetime | None = None,
         label_image_path: str | Path | None = None,
-    ) -> None:
+    ) -> str:
         normalized_tracking = normalize_tracking_number(tracking_number)
         invalid_reason = get_invalid_tracking_reason(normalized_tracking)
         if invalid_reason:
@@ -70,14 +70,17 @@ class ExcelManager:
             sheet.append(row)
             workbook.save(self.excel_path)
             logging.info("Excel record appended: %s", normalized_tracking)
+            return "excel"
         except PermissionError:
             logging.exception("Excel file is busy, writing backup CSV record: %s", tracking_number)
             self._append_backup_csv(row)
             print(f"Excel file is busy. Record was saved to backup CSV: {self._backup_csv_path()}")
+            return "backup_csv"
         except Exception:
             logging.exception("Failed to append Excel record, writing backup CSV record: %s", tracking_number)
             self._append_backup_csv(row)
             print(f"Excel write failed. Record was saved to backup CSV: {self._backup_csv_path()}")
+            return "backup_csv"
 
     def update_label_image_path(
         self,

@@ -257,16 +257,6 @@ class CameraCalibrationDialog(QDialog):
             # 3. 写回 config.json
             self._save_json(self._config_file_path, self._config_dict)
 
-            # 4. 同步 example_config（只补字段，不覆盖已有值）
-            if self._example_dict is not None and self._example_file_path is not None:
-                changed = False
-                for k, v in values.items():
-                    if k not in self._example_dict:
-                        self._example_dict[k] = v
-                        changed = True
-                if changed:
-                    self._save_json(self._example_file_path, self._example_dict)
-
             QMessageBox.information(
                 self, "摄像头矫正", "摄像头矫正参数已保存")
             self.accept()

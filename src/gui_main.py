@@ -1022,29 +1022,32 @@ class QueryDialog(QDialog):
             source = self.source_filter.currentData()
             self.results = self.query_manager.query(self.query_input.text(), start, end, source)
             self.save_query_preferences(start, end, source)
-            self.table.setRowCount(len(self.results))
-            for row_index, result in enumerate(self.results):
-                label_image_path = str(result.get("label_image_path", "") or "").strip()
-                label_image_exists = bool(label_image_path) and Path(label_image_path).is_file()
-                values = [
-                    result.get("tracking_number", ""),
-                    self.display_status(result.get("status", "")),
-                    result.get("source", ""),
-                    result.get("avi_path", ""),
-                    result.get("mp4_path", ""),
-                    "\u67e5\u770b" if label_image_exists else "\u65e0",
-                ]
-                for column_index, value in enumerate(values):
-                    item = QTableWidgetItem(value)
-                    if column_index == self.LABEL_IMAGE_COLUMN and label_image_path:
-                        item.setToolTip(label_image_path)
-                    else:
-                        item.setToolTip(value)
-                    self.table.setItem(row_index, column_index, item)
+            self._fill_results_table()
             self.refresh_status_panel()
             self.add_log(f"查询完成: {len(self.results)} 条记录")
         except Exception as e:
             self.add_log(f"查询失败: {e}")
+
+    def _fill_results_table(self) -> None:
+        self.table.setRowCount(len(self.results))
+        for row_index, result in enumerate(self.results):
+            label_image_path = str(result.get("label_image_path", "") or "").strip()
+            label_image_exists = bool(label_image_path) and Path(label_image_path).is_file()
+            values = [
+                result.get("tracking_number", ""),
+                self.display_status(result.get("status", "")),
+                result.get("source", ""),
+                result.get("avi_path", ""),
+                result.get("mp4_path", ""),
+                "\u67e5\u770b" if label_image_exists else "\u65e0",
+            ]
+            for column_index, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                if column_index == self.LABEL_IMAGE_COLUMN and label_image_path:
+                    item.setToolTip(label_image_path)
+                else:
+                    item.setToolTip(value)
+                self.table.setItem(row_index, column_index, item)
 
 
     def run_query(self) -> None:
@@ -1392,48 +1395,56 @@ class QueryDialog(QDialog):
             return
         
         success, fail = 0, 0
-        # Delete from end to avoid index shifting
-        for row in reversed(rows):
-            if row >= len(self.results):
-                continue
-            rec = self.results[row]
-            tracking = rec.get('tracking_number', '')
-            
-            # Delete AVI file
-            avi_path = rec.get('avi_path', '').strip()
-            if avi_path and Path(avi_path).exists():
-                try:
-                    Path(avi_path).unlink()
-                    self.add_log(f"\u5df2\u5220\u9664 AVI: {avi_path}")
-                except Exception as e:
-                    fail += 1
-                    self.add_log(f"\u5220\u9664 AVI \u5931\u8d25: {e}")
+        failed_tracking_numbers: list[str] = []
+        try:
+            # Delete from end to avoid index shifting
+            for row in reversed(rows):
+                if row >= len(self.results):
                     continue
-            
-            # Delete MP4 file if exists
-            mp4_path = rec.get('mp4_path', '').strip()
-            if mp4_path and Path(mp4_path).exists():
-                try:
-                    Path(mp4_path).unlink()
-                    self.add_log(f"\u5df2\u5220\u9664 MP4: {mp4_path}")
-                except Exception as e:
-                    self.add_log(f"\u5220\u9664 MP4 \u5931\u8d25: {e}")
-            
-            # Remove from results list
-            self.results.pop(row)
-            success += 1
-        
-        # Refresh table
-        self._populate_table()
-        # Update status panel
-        self.refresh_status_panel()
-        
-        QMessageBox.information(
-            self, 
-            TEXT["query_title"], 
-            f"\u5220\u9664\u5b8c\u6210\uff1a\u6210\u529f {success} \u6761\uff0c\u5931\u8d25 {fail} \u6761"
-        )
-        self.add_log(f"\u5220\u9664\u8bb0\u5f55\u5b8c\u6210: \u6210\u529f {success}, \u5931\u8d25 {fail}")
+                rec = self.results[row]
+                tracking = rec.get('tracking_number', '')
+
+                # Delete AVI file
+                avi_path = rec.get('avi_path', '').strip()
+                if avi_path and Path(avi_path).exists():
+                    try:
+                        Path(avi_path).unlink()
+                        self.add_log(f"\u5df2\u5220\u9664 AVI: {avi_path}")
+                    except Exception as e:
+                        fail += 1
+                        failed_tracking_numbers.append(tracking)
+                        self.add_log(f"\u5355\u53f7 {tracking} \u5220\u9664 AVI \u5931\u8d25: {e}")
+                        continue
+
+                # Delete MP4 file if exists
+                mp4_path = rec.get('mp4_path', '').strip()
+                if mp4_path and Path(mp4_path).exists():
+                    try:
+                        Path(mp4_path).unlink()
+                        self.add_log(f"\u5df2\u5220\u9664 MP4: {mp4_path}")
+                    except Exception as e:
+                        fail += 1
+                        failed_tracking_numbers.append(tracking)
+                        self.add_log(f"\u5355\u53f7 {tracking} \u5220\u9664 MP4 \u5931\u8d25: {e}")
+                        continue
+
+                # Remove from results list
+                self.results.pop(row)
+                success += 1
+        finally:
+            try:
+                # Refresh table
+                self._fill_results_table()
+                # Update status panel
+                self.refresh_status_panel()
+            except Exception as exc:
+                self.add_log(f"\u5220\u9664\u540e\u5237\u65b0\u5217\u8868\u5931\u8d25\uff1a{exc}")
+
+            summary = f"\u5220\u9664\u5b8c\u6210\uff1a\u6210\u529f {success} \u6761\uff0c\u5931\u8d25 {fail} \u6761"
+            if failed_tracking_numbers:
+                summary += "\n\u5931\u8d25\u5355\u53f7\uff1a" + "\u3001".join(failed_tracking_numbers)
+            QMessageBox.information(self, TEXT["query_title"], summary)
+            self.add_log(f"\u5220\u9664\u8bb0\u5f55\u5b8c\u6210: \u6210\u529f {success}, \u5931\u8d25 {fail}")
 
     def refresh_status_panel(self) -> None:
         try:
@@ -1463,15 +1474,14 @@ class QueryDialog(QDialog):
 
     def save_query_preferences(self, start: str, end: str, source: str) -> None:
         try:
-            for path in (RUNTIME_CONFIG, EXAMPLE_CONFIG):
-                with path.open("r", encoding="utf-8") as handle:
-                    raw_config = json.load(handle)
-                raw_config["query_default_start_date"] = start
-                raw_config["query_default_end_date"] = end
-                raw_config["query_default_source"] = source
-                with path.open("w", encoding="utf-8") as handle:
-                    json.dump(raw_config, handle, ensure_ascii=False, indent=2)
-                    handle.write("\n")
+            with RUNTIME_CONFIG.open("r", encoding="utf-8") as handle:
+                raw_config = json.load(handle)
+            raw_config["query_default_start_date"] = start
+            raw_config["query_default_end_date"] = end
+            raw_config["query_default_source"] = source
+            with RUNTIME_CONFIG.open("w", encoding="utf-8") as handle:
+                json.dump(raw_config, handle, ensure_ascii=False, indent=2)
+                handle.write("\n")
         except Exception:
             return
 
@@ -4045,45 +4055,6 @@ class ShippingMonitorWindow(QMainWindow):
                 json.dump(raw_config, handle, ensure_ascii=False, indent=2)
                 handle.write("\n")
 
-            with EXAMPLE_CONFIG.open("r", encoding="utf-8") as handle:
-                example_config = json.load(handle)
-            for key in (
-                "resolution",
-                "fps",
-                "resolution_policy",
-                "recording_writer_codec",
-                "enable_lens_correction",
-                "auto_stop_enabled",
-                "auto_stop_timeout",
-                "keep_camera_on_timeout",
-                "storage_path",
-                "min_free_disk_gb",
-                "duplicate_policy",
-                "duplicate_block_seconds",
-                "watermark_position",
-                "watermark_font_scale",
-                "watermark_color",
-                "watermark_opacity",
-                "mp4_output_folder",
-                "generate_mp4_on_query",
-                "query_default_source",
-                "query_default_start_date",
-                "query_default_end_date",
-                "frame_idle_detection_enabled",
-                "frame_idle_timeout",
-                "frame_motion_threshold",
-                "voice_enabled",
-                "voice_on_scan_success",
-                "voice_on_record_start",
-                "voice_on_record_stop",
-                "voice_on_invalid_tracking",
-                "voice_on_auth_problem",
-            ):
-                example_config[key] = values[key]
-            with EXAMPLE_CONFIG.open("w", encoding="utf-8") as handle:
-                json.dump(example_config, handle, ensure_ascii=False, indent=2)
-                handle.write("\n")
-
             self.config = get_config()
             self.recordings_dir = resolve_storage_path(self.config.storage_path)
             self.storage_path_status.setText(str(self.recordings_dir))
@@ -4481,18 +4452,30 @@ class ShippingMonitorWindow(QMainWindow):
 
         try:
             self.add_log("before_excel_write")
-            self.excel_manager.append_record(
+            write_target = self.excel_manager.append_record(
                 tracking_number,
                 video_path,
                 source="gui",
                 remark="GUI\u626b\u7801\u5f55\u5236",
                 label_image_path=label_image_path,
             )
-            self.excel_status.setText(TEXT["excel_ok"])
-            self.add_log(f"Excel\u5199\u5165\u6210\u529f\uff1a{tracking_number}")
-            self.add_log("after_excel_write: success=TRUE")
-            self.completed_tracking_numbers.add(tracking_number)
-            self.add_recent_tracking(tracking_number, TEXT["recorded_excel_ok"])
+            if write_target == "backup_csv":
+                self.excel_status.setText("\u5df2\u5199\u5165\u5907\u4efdCSV")
+                QMessageBox.warning(
+                    self,
+                    TEXT["query_title"],
+                    f"\u53f0\u8d26 Excel \u6587\u4ef6\u88ab\u5360\u7528\uff0c\u5355\u53f7 {tracking_number} \u7684\u8bb0\u5f55\u5df2\u5199\u5165\u5907\u4efd CSV\uff0c\u8bf7\u5173\u95ed Excel \u540e\u5904\u7406\u8be5\u5907\u4efd\u8bb0\u5f55\u3002",
+                )
+                self.add_log(f"Excel \u88ab\u5360\u7528\uff0c\u5df2\u5199\u5165\u5907\u4efd CSV\uff1a{tracking_number}")
+                self.add_log("after_excel_write: success=TRUE target=backup_csv")
+                self.completed_tracking_numbers.add(tracking_number)
+                self.add_recent_tracking(tracking_number, "Excel\u88ab\u5360\u7528\uff0c\u5df2\u5199\u5165\u5907\u4efdCSV")
+            else:
+                self.excel_status.setText(TEXT["excel_ok"])
+                self.add_log(f"Excel\u5199\u5165\u6210\u529f\uff1a{tracking_number}")
+                self.add_log("after_excel_write: success=TRUE")
+                self.completed_tracking_numbers.add(tracking_number)
+                self.add_recent_tracking(tracking_number, TEXT["recorded_excel_ok"])
         except Exception as exc:
             self.excel_status.setText(TEXT["excel_failed"])
             self.add_log(f"Excel \u5199\u5165\u5931\u8d25\uff1a{exc}")
