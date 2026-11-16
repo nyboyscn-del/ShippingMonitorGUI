@@ -4,6 +4,7 @@ import os
 import importlib.util
 import hashlib
 import json
+import logging
 import re
 import shutil
 import socket
@@ -108,6 +109,7 @@ from version import __project_name__, __version__, __build__, __copyright__, rel
 
 
 DEFAULT_RECORDINGS_DIR = resolve_storage_path("recordings")
+RETENTION_CLEANUP_INTERVAL_SECONDS = 60 * 60
 PREVIEW_INTERVAL_MS = 33
 RESOLUTION_OPTIONS = ["3840x2160", "2560x1440", "1920x1080", "1600x900", "1280x720"]
 WATERMARK_POSITIONS = [
@@ -1648,7 +1650,8 @@ class ShippingMonitorWindow(QMainWindow):
         self.frame_idle_seconds = 0
         self.frame_motion_diff = 0.0
         self.frame_is_static = False
-        self.retention_cleanup_ran = False
+        self.retention_cleanup_thread: threading.Thread | None = None
+        self.retention_cleanup_last_monotonic: float | None = None
         self._license_warning_shown = False
         self._recording_auth_warning_shown = False
         self._recording_auth_session_cache = None
@@ -2629,7 +2632,7 @@ class ShippingMonitorWindow(QMainWindow):
             self.apply_config_status()
             self.add_log("\u914d\u7f6e\u8bfb\u53d6\u6210\u529f")
             self.add_log(f"storage_path resolved: {self.config.storage_path} -> {self.recordings_dir}")
-            self.run_retention_cleanup_once()
+            self.schedule_retention_cleanup()
             self.update_disk_status(log_event=True)
             self.init_excel_manager()
         except Exception as exc:
@@ -2682,11 +2685,67 @@ class ShippingMonitorWindow(QMainWindow):
             self.excel_status.setText(TEXT["excel_failed"])
             self.add_log(f"Excel \u521d\u59cb\u5316\u5931\u8d25\uff1a{exc}")
 
-    def run_retention_cleanup_once(self) -> None:
-        if self.config is None or self.retention_cleanup_ran:
+    def schedule_retention_cleanup(self) -> None:
+        if self.config is None:
             return
-        self.retention_cleanup_ran = True
-        cleanup_old_recordings(self.recordings_dir, self.config.retention_days, logger=self.add_log)
+        retention_days = self._retention_days()
+        if retention_days <= 0:
+            self.add_log("retention cleanup disabled: retention_days must be greater than 0")
+            return
+        self.retention_cleanup_last_monotonic = None
+        self.add_log(
+            f"retention cleanup scheduled in background: path={self.recordings_dir}, "
+            f"days={retention_days}"
+        )
+
+    def _retention_days(self) -> int:
+        if self.config is None:
+            return 0
+        try:
+            return int(self.config.retention_days)
+        except (TypeError, ValueError):
+            return 0
+
+    def maybe_run_retention_cleanup(self) -> None:
+        if self.config is None:
+            return
+        if self.recorder is not None and self.recorder.is_recording():
+            return
+        if self.retention_cleanup_thread is not None and self.retention_cleanup_thread.is_alive():
+            return
+        retention_days = self._retention_days()
+        if retention_days <= 0:
+            return
+        now = time.monotonic()
+        last_run = self.retention_cleanup_last_monotonic
+        if last_run is not None and now - last_run < RETENTION_CLEANUP_INTERVAL_SECONDS:
+            return
+        self.retention_cleanup_last_monotonic = now
+        thread = threading.Thread(
+            target=self._run_retention_cleanup_worker,
+            args=(self.recordings_dir, retention_days),
+            name="retention-cleanup",
+            daemon=True,
+        )
+        self.retention_cleanup_thread = thread
+        thread.start()
+
+    def _run_retention_cleanup_worker(self, storage_path: Path, retention_days: int) -> None:
+        if self.recorder is not None and self.recorder.is_recording():
+            logging.info("retention cleanup skipped: recording in progress")
+            self.retention_cleanup_last_monotonic = None
+            return
+        try:
+            result = cleanup_old_recordings(storage_path, retention_days)
+            logging.info(
+                "retention cleanup result: deleted_files=%s, deleted_dirs=%s, skipped=%s, failed=%s",
+                result.get("deleted_files", 0),
+                result.get("deleted_dirs", 0),
+                result.get("skipped", 0),
+                result.get("failed", 0),
+            )
+        except Exception:  # noqa: BLE001
+            logging.exception("retention cleanup failed: path=%s", storage_path)
 
     def update_disk_status(self, log_event: bool = False) -> bool:
         if self.config is None:
@@ -2728,6 +2787,7 @@ class ShippingMonitorWindow(QMainWindow):
 
         self.update_idle_countdown()
         self.update_recording_experience_status()
+        self.maybe_run_retention_cleanup()
 
     def update_recording_experience_status(self) -> None:
         is_recording = self.recorder is not None and self.recorder.is_recording()
@@ -3964,7 +4024,11 @@ class ShippingMonitorWindow(QMainWindow):
                 host=host,
                 port=port,
                 token=token,
-                query_manager=QueryManager(self.config.excel_path, self.config.mp4_output_folder),
+                query_manager=QueryManager(
+                    self.config.excel_path,
+                    self.config.mp4_output_folder,
+                    allowed_roots=[self.recordings_dir],
+                ),
                 allowed_roots=[self.recordings_dir],
                 web_root=web_root,
             )

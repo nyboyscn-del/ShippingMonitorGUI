@@ -18,10 +18,13 @@ LOW_DISK_BLOCKED_MESSAGE = "Disk free space too low, recording blocked."
 LOW_DISK_STOPPED_MESSAGE = "Disk free space too low, recording stopped."
 WATCHDOG_RECONNECTED_MESSAGE = "Camera watchdog reconnected."
 WATCHDOG_FAILED_MESSAGE = "Camera watchdog failed, please check camera."
+WATCHDOG_RECORDING_STOPPED_MESSAGE = "Camera watchdog failed; recording stopped."
 RETENTION_VIDEO_SUFFIXES = {".avi", ".mp4"}
 RETENTION_SKIP_DIRS = {"backup", "config", "dist", "logs", "reports", "src", "__pycache__"}
 _FFMPEG_STATUS_LOGGED: set[str] = set()
 WRITER_FPS_HEADROOM = 0.95
+WRITE_FRAME_MAX_RETRIES = 3
+WRITE_FRAME_RETRY_INTERVAL_SECONDS = 0.05
 
 
 def sanitize_tracking_number(tracking_number: str) -> str:
@@ -718,59 +721,87 @@ class RecordingManager:
         last_disk_check = 0.0
         last_sequence: int | None = None
 
-        while not self._stop_event.is_set():
-            now = time.monotonic()
-            if now - last_disk_check >= 1:
-                last_disk_check = now
-                if not has_min_free_disk_space(self.storage_path, self.min_free_disk_gb):
-                    print(LOW_DISK_STOPPED_MESSAGE)
-                    logging.error(LOW_DISK_STOPPED_MESSAGE)
-                    self._release_writer()
-                    self._stop_event.set()
-                    break
+        try:
+            while not self._stop_event.is_set():
+                now = time.monotonic()
+                if now - last_disk_check >= 1:
+                    last_disk_check = now
+                    if not has_min_free_disk_space(self.storage_path, self.min_free_disk_gb):
+                        print(LOW_DISK_STOPPED_MESSAGE)
+                        logging.error(LOW_DISK_STOPPED_MESSAGE)
+                        self._stop_event.set()
+                        break
 
-            wait_sequence = last_sequence if last_sequence is not None else 0
-            ok, frame, sequence, captured_at = self.camera.wait_for_new_frame(
-                wait_sequence, timeout=1.0
-            )
-            if ok and frame is not None and self.writer is not None:
-                processing_started = time.monotonic()
-                if captured_at is not None:
-                    self.max_capture_age_seconds = max(
-                        self.max_capture_age_seconds, processing_started - captured_at
-                    )
-                if last_sequence is not None:
-                    self.skipped_capture_frame_count += max(0, sequence - last_sequence - 1)
-                last_sequence = sequence
-                self.received_new_frame_count += 1
-                failure_count = 0
-                # Skip frames outside the output cadence before applying image
-                # processing. The writer checks again for direct callers.
-                if (
-                    captured_at is not None
-                    and self.recording_start_monotonic is not None
-                    and int(max(0.0, captured_at - self.recording_start_monotonic) * self.writer_fps)
-                    < self.written_frame_count
-                ):
-                    self.timeline_dropped_frame_count += 1
+                wait_sequence = last_sequence if last_sequence is not None else 0
+                ok, frame, sequence, captured_at = self.camera.wait_for_new_frame(
+                    wait_sequence, timeout=1.0
+                )
+                if ok and frame is not None and self.writer is not None:
+                    processing_started = time.monotonic()
+                    if captured_at is not None:
+                        self.max_capture_age_seconds = max(
+                            self.max_capture_age_seconds, processing_started - captured_at
+                        )
+                    if last_sequence is not None:
+                        self.skipped_capture_frame_count += max(0, sequence - last_sequence - 1)
+                    last_sequence = sequence
+                    self.received_new_frame_count += 1
+                    failure_count = 0
+                    # Skip frames outside the output cadence before applying image
+                    # processing. The writer checks again for direct callers.
+                    if (
+                        captured_at is not None
+                        and self.recording_start_monotonic is not None
+                        and int(max(0.0, captured_at - self.recording_start_monotonic) * self.writer_fps)
+                        < self.written_frame_count
+                    ):
+                        self.timeline_dropped_frame_count += 1
+                        continue
+                    self.processed_frame_count += 1
+                    frame = self._apply_camera_calibration(frame)
+                    frame = self.apply_watermark(frame, self.current_tracking_number or "")
+                    writer_started = time.monotonic()
+                    self.processing_seconds += writer_started - processing_started
+                    write_error: Exception | None = None
+                    for attempt in range(1, WRITE_FRAME_MAX_RETRIES + 1):
+                        try:
+                            self._write_timed_frame(frame, captured_at)
+                            write_error = None
+                            break
+                        except Exception as exc:  # noqa: BLE001
+                            write_error = exc
+                            self._emit_recording_log(
+                                "Frame write failed "
+                                f"(attempt {attempt}/{WRITE_FRAME_MAX_RETRIES}): {exc}",
+                                warning=True,
+                            )
+                            if attempt < WRITE_FRAME_MAX_RETRIES:
+                                time.sleep(WRITE_FRAME_RETRY_INTERVAL_SECONDS)
+                    writer_elapsed = time.monotonic() - writer_started
+                    self.writer_seconds += writer_elapsed
+                    self.max_writer_seconds = max(self.max_writer_seconds, writer_elapsed)
+                    if write_error is not None:
+                        self._emit_recording_log(
+                            "Frame write retries exhausted; ending recording segment.",
+                            warning=True,
+                        )
+                        self._stop_event.set()
+                        break
                     continue
-                self.processed_frame_count += 1
-                frame = self._apply_camera_calibration(frame)
-                frame = self.apply_watermark(frame, self.current_tracking_number or "")
-                writer_started = time.monotonic()
-                self.processing_seconds += writer_started - processing_started
-                self._write_timed_frame(frame, captured_at)
-                writer_elapsed = time.monotonic() - writer_started
-                self.writer_seconds += writer_elapsed
-                self.max_writer_seconds = max(self.max_writer_seconds, writer_elapsed)
-                continue
 
-            failure_count += 1
-            logging.warning("Camera frame read failed, consecutive_failures=%s", failure_count)
-            if self.watchdog_enabled and failure_count > self.watchdog_max_failures:
-                self._handle_watchdog_failure()
-                failure_count = 0
-            time.sleep(0.1)
+                failure_count += 1
+                logging.warning("Camera frame read failed, consecutive_failures=%s", failure_count)
+                if self.watchdog_enabled and failure_count > self.watchdog_max_failures:
+                    self._handle_watchdog_failure()
+                    failure_count = 0
+                time.sleep(0.1)
+        except Exception as exc:  # noqa: BLE001
+            self._emit_recording_log(
+                f"Recording loop aborted by unexpected error: {exc}",
+                warning=True,
+            )
+        finally:
+            self._release_writer()
 
     def _handle_watchdog_failure(self) -> None:
         self._release_writer()
@@ -780,13 +811,50 @@ class RecordingManager:
             logging.warning("Camera watchdog reconnect attempt %s/%s", attempt, self.watchdog_retry_count)
             time.sleep(self.watchdog_retry_interval)
             if self.camera.open():
-                print(WATCHDOG_RECONNECTED_MESSAGE)
-                logging.info(WATCHDOG_RECONNECTED_MESSAGE)
+                self._emit_recording_log(WATCHDOG_RECONNECTED_MESSAGE)
+                if not self._resume_recording_after_reconnect():
+                    self._emit_recording_log(WATCHDOG_RECORDING_STOPPED_MESSAGE, warning=True)
+                    self._stop_event.set()
                 return
 
-        print(WATCHDOG_FAILED_MESSAGE)
-        logging.error(WATCHDOG_FAILED_MESSAGE)
+        self._emit_recording_log(WATCHDOG_FAILED_MESSAGE, warning=True)
+        self._emit_recording_log(WATCHDOG_RECORDING_STOPPED_MESSAGE, warning=True)
         self._stop_event.set()
+
+    def _resume_recording_after_reconnect(self) -> bool:
+        tracking_number = self.current_tracking_number
+        if not tracking_number:
+            return False
+        resume_path = build_video_path(self.storage_path, tracking_number)
+        camera_resolution = getattr(self.camera, "resolution", None)
+        if isinstance(camera_resolution, (tuple, list)) and len(camera_resolution) == 2:
+            self.resolution = (int(camera_resolution[0]), int(camera_resolution[1]))
+        try:
+            resume_path.parent.mkdir(parents=True, exist_ok=True)
+            if resume_path.exists() or resume_path == self.current_video_path:
+                base = resume_path.with_name(f"{resume_path.stem}_resume")
+                candidate = base.with_suffix(resume_path.suffix)
+                index = 1
+                while (candidate.exists() or candidate == self.current_video_path) and index <= 99:
+                    candidate = base.with_name(f"{base.name}_{index}").with_suffix(resume_path.suffix)
+                    index += 1
+                resume_path = candidate
+            writer = self._open_video_writer(resume_path)
+        except Exception as exc:  # noqa: BLE001
+            self._emit_recording_log(
+                f"Recording resume after camera watchdog reconnect failed: {exc}",
+                warning=True,
+            )
+            return False
+        self._reset_recording_timing(reset_writer_fps=False)
+        self.writer = writer
+        self.current_video_path = resume_path
+        self._emit_recording_log(
+            "Recording resumed after camera watchdog reconnect: "
+            f"path={resume_path}, writer_fps={self.writer_fps:.2f}, "
+            f"writer_codec={self.writer_codec_actual}"
+        )
+        return True
 
     def is_recording(self) -> bool:
         return self.writer is not None and self._thread is not None and self._thread.is_alive()

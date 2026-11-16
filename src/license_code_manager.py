@@ -5,6 +5,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import math
 import os
 import platform
@@ -441,24 +442,53 @@ def verify_authorization_code(
     return _result(True, "valid", "Authorization code is valid.", payload, features)
 
 
-def load_license_state(state_path: Path = LICENSE_STATE_PATH) -> dict[str, Any]:
-    if not state_path.exists():
-        raise FileNotFoundError(f"License state not found: {state_path}")
-    try:
-        with state_path.open("r", encoding="utf-8") as handle:
-            state = json.load(handle)
-    except Exception as exc:  # noqa: BLE001
-        raise LicenseStateError("Local license state is corrupted.") from exc
+def _read_license_state_file(state_path: Path) -> dict[str, Any]:
+    with state_path.open("r", encoding="utf-8") as handle:
+        state = json.load(handle)
     if not isinstance(state, dict):
         raise LicenseStateError("Local license state is corrupted.")
     return state
 
 
+def load_license_state(state_path: Path = LICENSE_STATE_PATH) -> dict[str, Any]:
+    state_path = Path(state_path)
+    if not state_path.exists():
+        raise FileNotFoundError(f"License state not found: {state_path}")
+    try:
+        return _read_license_state_file(state_path)
+    except Exception as exc:  # noqa: BLE001
+        backup_path = state_path.with_name(state_path.name + ".bak")
+        try:
+            state = _read_license_state_file(backup_path)
+        except Exception:  # noqa: BLE001
+            raise LicenseStateError("Local license state is corrupted.") from exc
+        logging.warning("Local license state recovered from backup: %s", backup_path)
+        return state
+
+
 def save_license_state(payload: dict[str, Any], state_path: Path = LICENSE_STATE_PATH) -> None:
+    state_path = Path(state_path)
     state_path.parent.mkdir(parents=True, exist_ok=True)
-    with state_path.open("w", encoding="utf-8") as handle:
-        json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
-        handle.write("\n")
+    temp_path = state_path.with_name(state_path.name + ".tmp")
+    backup_path = state_path.with_name(state_path.name + ".bak")
+    try:
+        with temp_path.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        if state_path.exists():
+            try:
+                backup_path.write_bytes(state_path.read_bytes())
+            except OSError as exc:
+                logging.warning("Could not write license state backup: %s", exc)
+        os.replace(temp_path, state_path)
+    finally:
+        if temp_path.exists():
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
 
 
 def activate_with_code(code: str) -> LicenseVerifyResult:
