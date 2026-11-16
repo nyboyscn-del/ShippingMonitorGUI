@@ -39,6 +39,8 @@ _EVIDENCE_FORBIDDEN_NAMES = {
     "issued_licenses.csv",
 }
 _FORMULA_PREFIXES = ("=", "+", "-", "@")
+_INTERNAL_RESULT_KEYS = ("_raw_avi_path", "_raw_mp4_path", "_raw_label_image_path")
+_RAW_AVI_KEY, _RAW_MP4_KEY, _RAW_LABEL_KEY = _INTERNAL_RESULT_KEYS
 
 
 def _safe_export_text(value: object) -> str:
@@ -153,6 +155,7 @@ class QueryManager:
         self.excel_path = Path(excel_path)
         self.mp4_folder_name = mp4_folder_name or "MP4"
         self.logger = logging.getLogger(__name__)
+        self._ledger_cache: tuple[tuple[int, int], list[str], list[tuple[object, ...]]] | None = None
         runtime_dir = (
             Path(sys.executable).resolve().parent
             if getattr(sys, "frozen", False)
@@ -169,6 +172,24 @@ class QueryManager:
         end_date: str = "",
         source: str = "",
     ) -> list[dict[str, str]]:
+        results, _total = self.query_with_total(tracking_number, start_date, end_date, source)
+        return [
+            self._strip_internal_result_fields(self.resolve_result_paths(result))
+            for result in results
+        ]
+
+    def query_with_total(
+        self,
+        tracking_number: str = "",
+        start_date: str = "",
+        end_date: str = "",
+        source: str = "",
+    ) -> tuple[list[dict[str, str]], int]:
+        """Return matching rows plus the number of valid rows in the ledger.
+
+        Media paths are returned as recorded. The caller resolves file existence
+        on demand (rendering/opening) through ``resolve_result_paths``.
+        """
         needle = normalize_tracking_number(tracking_number)
         source_filter = self._normalize_source(source)
         start = self._parse_date(start_date, end_of_day=False)
@@ -180,24 +201,21 @@ class QueryManager:
         )
         if not self.excel_path.exists():
             self._log(f"query source missing: {self.excel_path}")
-            return []
+            return [], 0
 
-        workbook = load_workbook(self.excel_path, read_only=True, data_only=True)
-        try:
-            sheet = workbook.active
-            rows = list(sheet.iter_rows(values_only=True))
-        finally:
-            workbook.close()
-        if not rows:
+        ledger = self._load_ledger()
+        if ledger is None:
+            return [], 0
+        headers, data_rows = ledger
+        if not headers:
             self._log(f"query source empty: {self.excel_path}")
-            return []
+            return [], 0
 
-        headers = [str(value or "").strip() for value in rows[0]]
-        self._log(f"query source loaded: rows={max(0, len(rows) - 1)}, headers={headers}")
+        self._log(f"query source loaded: rows={len(data_rows)}, headers={headers}")
         results: list[dict[str, str]] = []
         raw_count = 0
         valid_count = 0
-        for row in rows[1:]:
+        for row in data_rows:
             record = self._row_to_record(headers, row)
             if not any(value.strip() for value in record.values()):
                 continue
@@ -219,32 +237,78 @@ class QueryManager:
             if source_filter and row_source != source_filter:
                 continue
 
-            raw_avi_path = self._record_video_path(record)
-            mp4_record_path = record.get("mp4_path", "").strip()
-            avi_path = self.resolve_existing_media_path(raw_avi_path, {".avi"})
-            mp4_path = self.resolve_mp4_path(
-                avi_path or raw_avi_path,
-                row_tracking,
-                recorded_mp4_path=mp4_record_path,
-            )
-            raw_label_path = record.get("label_image_path", "").strip()
-            label_path = self.resolve_label_image_path(
-                avi_path or raw_avi_path,
-                recorded_label_path=raw_label_path,
-            )
             result = QueryResult(
                 time=row_time,
                 tracking_number=row_tracking,
-                avi_path=str(avi_path) if avi_path else raw_avi_path,
-                mp4_path=str(mp4_path) if mp4_path else "",
-                label_image_path=str(label_path) if label_path else raw_label_path,
-                status="recorded" if avi_path else "missing_avi",
+                avi_path=self._record_video_path(record),
+                mp4_path=record.get("mp4_path", "").strip(),
+                label_image_path=record.get("label_image_path", "").strip(),
+                status="",
                 source=row_source,
                 remark=record.get("remark", ""),
-            )
-            results.append(result.to_json_dict())
+            ).to_json_dict()
+            result[_RAW_AVI_KEY] = result["avi_path"]
+            result[_RAW_MP4_KEY] = result["mp4_path"]
+            result[_RAW_LABEL_KEY] = result["label_image_path"]
+            results.append(result)
         self._log(f"query finished: raw={raw_count}, valid={valid_count}, results={len(results)}")
-        return results
+        return results, valid_count
+
+    def _load_ledger(self) -> tuple[list[str], list[tuple[object, ...]]] | None:
+        try:
+            stat = self.excel_path.stat()
+        except OSError:
+            return None
+        cache_key = (stat.st_mtime_ns, stat.st_size)
+        cache = self._ledger_cache
+        if cache is not None and cache[0] == cache_key:
+            return cache[1], cache[2]
+
+        workbook = load_workbook(self.excel_path, read_only=True, data_only=True)
+        try:
+            sheet = workbook.active
+            rows = list(sheet.iter_rows(values_only=True))
+        finally:
+            workbook.close()
+        if not rows:
+            self._ledger_cache = (cache_key, [], [])
+            return [], []
+        headers = [str(value or "").strip() for value in rows[0]]
+        data_rows = rows[1:]
+        self._ledger_cache = (cache_key, headers, data_rows)
+        return headers, data_rows
+
+    def resolve_result_paths(self, result: dict[str, str]) -> dict[str, str]:
+        """Resolve media paths for one row on demand and update it in place."""
+        tracking_number = normalize_tracking_number(result.get("tracking_number", ""))
+        raw_avi_path = str(result.get(_RAW_AVI_KEY, result.get("avi_path", "")) or "")
+        recorded_mp4_path = str(result.get(_RAW_MP4_KEY, result.get("mp4_path", "")) or "")
+        recorded_label_path = str(
+            result.get(_RAW_LABEL_KEY, result.get("label_image_path", "")) or ""
+        )
+        result[_RAW_AVI_KEY] = raw_avi_path
+        result[_RAW_MP4_KEY] = recorded_mp4_path
+        result[_RAW_LABEL_KEY] = recorded_label_path
+
+        avi_path = self.resolve_existing_media_path(raw_avi_path, {".avi"})
+        mp4_path = self.resolve_mp4_path(
+            avi_path or raw_avi_path,
+            tracking_number,
+            recorded_mp4_path=recorded_mp4_path,
+        )
+        label_path = self.resolve_label_image_path(
+            avi_path or raw_avi_path,
+            recorded_label_path=recorded_label_path,
+        )
+        result["avi_path"] = str(avi_path) if avi_path else raw_avi_path
+        result["mp4_path"] = str(mp4_path) if mp4_path else ""
+        result["label_image_path"] = str(label_path) if label_path else ""
+        result["status"] = "recorded" if avi_path else "missing_avi"
+        return result
+
+    @staticmethod
+    def _strip_internal_result_fields(result: dict[str, str]) -> dict[str, str]:
+        return {key: value for key, value in result.items() if not key.startswith("_")}
 
     def search_by_tracking_number(self, number: str) -> list[dict[str, str]]:
         self._log(f"search_by_tracking_number: number={number}")
@@ -352,7 +416,8 @@ class QueryManager:
     def export_json(self, results: list[dict[str, str]], output_path: str | Path) -> Path:
         output = Path(output_path)
         output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text(json.dumps(results, ensure_ascii=False, indent=2), encoding="utf-8")
+        clean_results = [self._strip_internal_result_fields(result) for result in results]
+        output.write_text(json.dumps(clean_results, ensure_ascii=False, indent=2), encoding="utf-8")
         return output
 
     def create_evidence_package(

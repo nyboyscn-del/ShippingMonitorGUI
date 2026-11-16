@@ -12,6 +12,7 @@ import platform
 import re
 import subprocess
 import sys
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -107,6 +108,14 @@ def _runtime_root() -> Path:
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
     return PROJECT_ROOT
+
+
+def _default_machine_code_cache_path() -> Path:
+    return _runtime_root() / "config" / "machine_code_cache.json"
+
+
+MACHINE_CODE_CACHE_PATH = _default_machine_code_cache_path()
+_MACHINE_CODE_CACHE_LOCK = threading.Lock()
 
 
 def _default_trial_primary_path() -> Path:
@@ -244,9 +253,50 @@ def get_machine_code_info() -> tuple[str, bool, int]:
     return digest, stable_count < 2, stable_count
 
 
+def _read_machine_code_cache() -> str | None:
+    try:
+        with MACHINE_CODE_CACHE_PATH.open("r", encoding="utf-8") as handle:
+            cache = json.load(handle)
+        if not isinstance(cache, dict):
+            return None
+        if cache.get("product") != PRODUCT:
+            return None
+        if cache.get("machine_code_version") != MACHINE_CODE_VERSION:
+            return None
+        normalized = normalize_machine_code(str(cache.get("machine_code", "")))
+        return normalized
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _write_machine_code_cache(machine_code: str) -> None:
+    cache = {
+        "product": PRODUCT,
+        "machine_code_version": MACHINE_CODE_VERSION,
+        "machine_code": machine_code,
+        "created_at": _iso_now(),
+    }
+    try:
+        MACHINE_CODE_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        temporary = MACHINE_CODE_CACHE_PATH.with_name(f"{MACHINE_CODE_CACHE_PATH.name}.tmp")
+        with temporary.open("w", encoding="utf-8") as handle:
+            json.dump(cache, handle, ensure_ascii=False, indent=2, sort_keys=True)
+            handle.write("\n")
+        temporary.replace(MACHINE_CODE_CACHE_PATH)
+    except OSError:
+        return
+
+
 def get_machine_code() -> str:
-    machine_code, _low_stability, _stable_count = get_machine_code_info()
-    return machine_code
+    # Cache the hardware fingerprint per machine so startup does not spawn
+    # PowerShell queries every time. The fingerprint algorithm is untouched.
+    with _MACHINE_CODE_CACHE_LOCK:
+        cached = _read_machine_code_cache()
+        if cached is not None:
+            return cached
+        machine_code, _low_stability, _stable_count = get_machine_code_info()
+        _write_machine_code_cache(machine_code)
+        return machine_code
 
 
 def normalize_machine_code(machine_code: str) -> str:

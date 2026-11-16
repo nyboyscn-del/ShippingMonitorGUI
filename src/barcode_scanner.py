@@ -91,11 +91,12 @@ class BarcodeScanner:
             "qrcode_available": hasattr(cv2, "QRCodeDetector"),
         }
 
-    def detect(self, frame) -> str | None:
+    def detect(self, frame, apply_debounce: bool = True) -> str | None:
         """
         对一帧图像做条码检测。
 
         :param frame: BGR numpy array（OpenCV 帧）
+        :param apply_debounce: 是否应用内置防抖；调用方自行管理状态锁时传 False
         :return: 识别到的条码字符串；未识别到返回 None
         """
         try:
@@ -118,6 +119,10 @@ class BarcodeScanner:
 
             if not code:
                 return None
+
+            if not apply_debounce:
+                print(f"[BarcodeScanner] Barcode detected: {code}")
+                return code
 
             # 防抖：同一条码在 debounce_sec 内不重复触发
             now = time.time()

@@ -193,6 +193,9 @@ TEXT = {
     "not_written": "\u672a\u5199\u5165",
     "not_checked": "\u672a\u68c0\u6d4b",
     "not_verified": "\u672a\u6821\u9a8c",
+    "license_checking": "\u68c0\u6d4b\u4e2d\u2026",
+    "camera_starting": "\u6b63\u5728\u542f\u52a8\u6444\u50cf\u5934\u2026",
+    "camera_start_cancelled": "\u5df2\u53d6\u6d88\u542f\u52a8",
     "not_loaded": "\u672a\u8bfb\u53d6",
     "previewing": "\u9884\u89c8\u4e2d",
     "start_failed": "\u542f\u52a8\u5931\u8d25",
@@ -708,13 +711,35 @@ def license_activation_error_display(status: str, fallback: str) -> str:
 
 
 class LicenseActivationDialog(QDialog):
+    machine_code_ready = pyqtSignal(str)
+
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.main_window = parent
-        self.machine_code = get_machine_code()
+        self.machine_code = ""
+        self._machine_code_loading = True
         self.setWindowTitle("软件授权 / 激活")
         self.resize(700, 560)
         self._build_ui()
+        self.machine_code_ready.connect(self._on_machine_code_ready)
+        threading.Thread(
+            target=self._load_machine_code_worker,
+            name="license-machine-code",
+            daemon=True,
+        ).start()
+
+    def _load_machine_code_worker(self) -> None:
+        try:
+            text = format_machine_code(get_machine_code())
+        except Exception:  # noqa: BLE001
+            text = ""
+        self.machine_code_ready.emit(text)
+
+    def _on_machine_code_ready(self, text: str) -> None:
+        self._machine_code_loading = False
+        self.machine_code = text
+        self.machine_code_value.setText(text or "读取失败")
+        # Machine code is cached by now, so the license check no longer blocks.
         self.refresh_license_status()
 
     def _build_ui(self) -> None:
@@ -731,7 +756,7 @@ class LicenseActivationDialog(QDialog):
         self.expiry_value = QLabel("—")
         self.features_value = QLabel("—")
         self.features_value.setWordWrap(True)
-        self.machine_code_value = QLabel(format_machine_code(self.machine_code))
+        self.machine_code_value = QLabel(TEXT["license_checking"])
         self.machine_code_value.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.machine_code_value.setWordWrap(True)
         form.addRow("授权状态", self.status_value)
@@ -785,6 +810,9 @@ class LicenseActivationDialog(QDialog):
         self.features_value.setText(license_features_display(status.features) if status.ok else "—")
 
     def copy_machine_code(self) -> None:
+        if self._machine_code_loading or not self.machine_code:
+            QMessageBox.information(self, "软件授权", "机器码检测中，请稍候。")
+            return
         QApplication.clipboard().setText(self.machine_code_value.text())
         QMessageBox.information(self, "软件授权", "机器码已复制。")
 
@@ -834,6 +862,9 @@ class QueryDialog(QDialog):
     LABEL_IMAGE_COLUMN = 5
     export_log = pyqtSignal(str)
     export_mp4_done = pyqtSignal(int, int)
+    evidence_package_done = pyqtSignal(str, object)
+    avi_export_done = pyqtSignal(int, int)
+    mp4_ready = pyqtSignal(int, str, str)
 
     def __init__(
         self,
@@ -849,12 +880,19 @@ class QueryDialog(QDialog):
         self.defaults = defaults or {}
         self.generate_mp4_on_query = generate_mp4_on_query
         self.last_evidence_package_path: Path | None = None
+        self.total_records = 0
+        self._evidence_export_thread: threading.Thread | None = None
+        self._avi_export_thread: threading.Thread | None = None
+        self._mp4_open_in_progress = False
         self.erp_manager = ERPManager(runtime_root() / "data" / "erp_orders.xlsx")
         self.setWindowTitle(TEXT["query_title"])
         self.resize(1120, 640)
         self._build_ui()
         self.export_log.connect(self.add_log)
         self.export_mp4_done.connect(self._on_export_mp4_done)
+        self.evidence_package_done.connect(self._on_evidence_package_done)
+        self.avi_export_done.connect(self._on_export_avi_done)
+        self.mp4_ready.connect(self._on_mp4_ready)
         self._load_defaults()
         # Do NOT auto-query on open; user must click query or press Enter
 
@@ -884,6 +922,7 @@ class QueryDialog(QDialog):
         open_avi_button.clicked.connect(self.open_selected_avi)
         mp4_button = QPushButton(TEXT["open_or_create_mp4"])
         mp4_button.clicked.connect(self.open_or_create_selected_mp4)
+        self.open_mp4_button = mp4_button
         export_csv_button = QPushButton(TEXT["export_csv"])
         export_csv_button.clicked.connect(self.export_csv)
         export_excel_button = QPushButton(TEXT["export_excel"])
@@ -918,10 +957,12 @@ class QueryDialog(QDialog):
         # Row 1: buttons
         export_avi_button = QPushButton("\u5bfc\u51fa AVI")
         export_avi_button.clicked.connect(self.export_selected_avi)
+        self.export_avi_button = export_avi_button
         export_mp4_button = QPushButton("\u5bfc\u51fa MP4")
         export_mp4_button.clicked.connect(self.export_selected_mp4)
         evidence_button = QPushButton("导出证据包")
         evidence_button.clicked.connect(self.export_evidence_package)
+        self.evidence_button = evidence_button
         open_evidence_button = QPushButton("打开证据包目录")
         open_evidence_button.clicked.connect(self.open_evidence_package_directory)
         search_layout.addWidget(query_button, 1, 0)
@@ -1022,7 +1063,9 @@ class QueryDialog(QDialog):
             start = self.start_date.date().toString("yyyy-MM-dd")
             end = self.end_date.date().toString("yyyy-MM-dd")
             source = self.source_filter.currentData()
-            self.results = self.query_manager.query(self.query_input.text(), start, end, source)
+            self.results, self.total_records = self.query_manager.query_with_total(
+                self.query_input.text(), start, end, source
+            )
             self.save_query_preferences(start, end, source)
             self._fill_results_table()
             self.refresh_status_panel()
@@ -1033,6 +1076,8 @@ class QueryDialog(QDialog):
     def _fill_results_table(self) -> None:
         self.table.setRowCount(len(self.results))
         for row_index, result in enumerate(self.results):
+            # Resolve media paths only when rows are rendered.
+            self.query_manager.resolve_result_paths(result)
             label_image_path = str(result.get("label_image_path", "") or "").strip()
             label_image_exists = bool(label_image_path) and Path(label_image_path).is_file()
             values = [
@@ -1084,6 +1129,9 @@ class QueryDialog(QDialog):
         result = self.selected_result()
         if not result:
             return
+        if self._mp4_open_in_progress:
+            self.add_log("MP4 处理进行中，请稍候")
+            return
         try:
             mp4_path_text = result.get("mp4_path", "").strip()
             mp4_path = Path(mp4_path_text) if mp4_path_text else None
@@ -1096,18 +1144,61 @@ class QueryDialog(QDialog):
                     )
                     if answer != QMessageBox.Yes:
                         return
-                mp4_path = self.query_manager.ensure_mp4(
-                    result.get("avi_path", ""),
-                    result.get("tracking_number", ""),
-                )
-                result["mp4_path"] = str(mp4_path)
-                item = QTableWidgetItem(str(mp4_path))
-                item.setToolTip(str(mp4_path))
-                self.table.setItem(self.table.currentRow(), self.MP4_COLUMN, item)
-                self.refresh_status_panel()
+                self._start_mp4_generation(result)
+                return
             self.playback_manager.open_video(mp4_path)
         except Exception as exc:
             QMessageBox.warning(self, TEXT["query_title"], f"MP4 \u5904\u7406\u5931\u8d25\uff1a{exc}")
+
+    def _start_mp4_generation(self, result: dict[str, str]) -> None:
+        row = self.table.currentRow()
+        avi_text = result.get("avi_path", "")
+        tracking = result.get("tracking_number", "")
+        self._mp4_generate_row = row
+        self._mp4_generate_tracking = tracking
+        self._mp4_generate_avi = avi_text
+        self._mp4_open_in_progress = True
+        self.open_mp4_button.setEnabled(False)
+        self.add_log("MP4 \u751f\u6210\u5f00\u59cb\u2026\u2026")
+
+        def _do_generate():
+            try:
+                generated = self.query_manager.ensure_mp4(avi_text, tracking)
+                self.mp4_ready.emit(row, str(generated), "")
+            except Exception as exc:  # noqa: BLE001
+                self.mp4_ready.emit(row, "", str(exc))
+
+        class Mp4GenerateThread(threading.Thread):
+            def __init__(self_inner):
+                super().__init__(daemon=True)
+
+            def run(self_inner):
+                _do_generate()
+
+        self._mp4_generate_thread = Mp4GenerateThread()
+        self._mp4_generate_thread.start()
+
+    def _on_mp4_ready(self, row: int, mp4_path_text: str, error: str) -> None:
+        self._mp4_open_in_progress = False
+        self.open_mp4_button.setEnabled(True)
+        if error:
+            self.add_log(f"MP4 \u5904\u7406\u5931\u8d25\uff1a{error}")
+            QMessageBox.warning(self, TEXT["query_title"], f"MP4 \u5904\u7406\u5931\u8d25\uff1a{error}")
+            return
+        row_matches = (
+            0 <= row < len(self.results)
+            and row < self.table.rowCount()
+            and self.results[row].get("tracking_number", "") == getattr(self, "_mp4_generate_tracking", "")
+            and self.results[row].get("avi_path", "") == getattr(self, "_mp4_generate_avi", "")
+        )
+        if row_matches:
+            self.results[row]["mp4_path"] = mp4_path_text
+            item = QTableWidgetItem(mp4_path_text)
+            item.setToolTip(mp4_path_text)
+            self.table.setItem(row, self.MP4_COLUMN, item)
+            self.refresh_status_panel()
+        self.add_log(f"MP4 \u5df2\u751f\u6210\uff1a{mp4_path_text}")
+        self.playback_manager.open_video(Path(mp4_path_text))
 
     def open_selected_label_image(self) -> None:
         result = self.selected_result()
@@ -1219,20 +1310,52 @@ class QueryDialog(QDialog):
     def export_evidence_package(self) -> None:
         result = self.selected_result()
         if not result:
-            QMessageBox.information(self, TEXT["query_title"], "请先选择一条查询记录")
+            QMessageBox.information(self, TEXT["query_title"], "\u8bf7\u5148\u9009\u62e9\u4e00\u6761\u67e5\u8be2\u8bb0\u5f55")
             return
-        try:
-            package_path, export_result = self.query_manager.create_evidence_package(result)
-            self.last_evidence_package_path = package_path
-            missing_count = len(export_result.get("notes", []))
-            message = f"证据包已导出：\n{package_path}"
-            if missing_count:
-                message += f"\n\n有 {missing_count} 项文件缺失或未复制，详情见 summary.txt。"
-            self.add_log(f"证据包已导出：{package_path}")
-            QMessageBox.information(self, "导出证据包", message)
-        except Exception as exc:  # noqa: BLE001
-            self.add_log(f"证据包导出失败：{exc}")
-            QMessageBox.warning(self, "导出证据包", f"导出失败：{exc}")
+        if self._evidence_export_thread is not None and self._evidence_export_thread.is_alive():
+            self.add_log("\u8bc1\u636e\u5305\u5bfc\u51fa\u8fdb\u884c\u4e2d\uff0c\u8bf7\u7a0d\u5019")
+            return
+        record = dict(result)
+        self.evidence_button.setEnabled(False)
+        self.evidence_button.setText("\u5bfc\u51fa\u4e2d\u2026")
+        self.add_log("\u8bc1\u636e\u5305\u5bfc\u51fa\u5f00\u59cb\u2026\u2026")
+
+        def _do_export():
+            try:
+                package_path, export_result = self.query_manager.create_evidence_package(record)
+                self.evidence_package_done.emit(str(package_path), export_result)
+            except Exception as exc:  # noqa: BLE001
+                self.evidence_package_done.emit("", {"error": str(exc)})
+
+        class EvidencePackageThread(threading.Thread):
+            def __init__(self_inner):
+                super().__init__(daemon=True)
+
+            def run(self_inner):
+                _do_export()
+
+        self._evidence_export_thread = EvidencePackageThread()
+        self._evidence_export_thread.start()
+
+    def _on_evidence_package_done(self, package_path: str, export_result) -> None:
+        self.evidence_button.setEnabled(True)
+        self.evidence_button.setText("\u5bfc\u51fa\u8bc1\u636e\u5305")
+        if not package_path:
+            error = ""
+            if isinstance(export_result, dict):
+                error = str(export_result.get("error", ""))
+            self.add_log(f"\u8bc1\u636e\u5305\u5bfc\u51fa\u5931\u8d25\uff1a{error}")
+            QMessageBox.warning(self, "\u5bfc\u51fa\u8bc1\u636e\u5305", f"\u5bfc\u51fa\u5931\u8d25\uff1a{error}")
+            return
+        path = Path(package_path)
+        self.last_evidence_package_path = path
+        notes = export_result.get("notes", []) if isinstance(export_result, dict) else []
+        missing_count = len(notes)
+        message = f"\u8bc1\u636e\u5305\u5df2\u5bfc\u51fa\uff1a\n{path}"
+        if missing_count:
+            message += f"\n\n\u6709 {missing_count} \u9879\u6587\u4ef6\u7f3a\u5931\u6216\u672a\u590d\u5236\uff0c\u8be6\u60c5\u89c1 summary.txt\u3002"
+        self.add_log(f"\u8bc1\u636e\u5305\u5df2\u5bfc\u51fa\uff1a{path}")
+        QMessageBox.information(self, "\u5bfc\u51fa\u8bc1\u636e\u5305", message)
 
     def open_evidence_package_directory(self) -> None:
         target = self.last_evidence_package_path
@@ -1260,31 +1383,56 @@ class QueryDialog(QDialog):
         selected = self._get_selected_results()
         if not selected:
             return
+        if self._avi_export_thread is not None and self._avi_export_thread.is_alive():
+            self.add_log("AVI \u5bfc\u51fa\u8fdb\u884c\u4e2d\uff0c\u8bf7\u7a0d\u5019")
+            return
         target_dir = QFileDialog.getExistingDirectory(self, "\u9009\u62e9\u5bfc\u51fa\u76ee\u5f55")
         if not target_dir:
             return
-        import shutil
-        success, fail = 0, 0
-        for rec in selected:
-            avi = rec.get("avi_path", "").strip()
-            if not avi or not Path(avi).exists():
-                fail += 1
-                self.add_log(f"AVI \u4e0d\u5b58\u5728: {avi}")
-                continue
-            dest = Path(target_dir) / Path(avi).name
-            if dest.exists():
-                stem, suffix = dest.stem, dest.suffix
-                n = 1
-                while dest.exists():
-                    dest = Path(target_dir) / f"{stem}_{n}{suffix}"
-                    n += 1
-            try:
-                shutil.copy2(avi, dest)
-                success += 1
-            except Exception as e:
-                fail += 1
-                self.add_log(f"AVI \u5bfc\u51fa\u5931\u8d25: {e}")
+        records = [dict(rec) for rec in selected]
+        target_path = Path(target_dir)
+        self.export_avi_button.setEnabled(False)
+        self.export_avi_button.setText("\u5bfc\u51fa\u4e2d\u2026")
+        self.add_log("AVI \u5bfc\u51fa\u5f00\u59cb\u2026\u2026")
+
+        def _do_export():
+            success, fail = 0, 0
+            for rec in records:
+                avi = rec.get("avi_path", "").strip()
+                if not avi or not Path(avi).exists():
+                    fail += 1
+                    self.export_log.emit(f"AVI \u4e0d\u5b58\u5728: {avi}")
+                    continue
+                dest = target_path / Path(avi).name
+                if dest.exists():
+                    stem, suffix = dest.stem, dest.suffix
+                    n = 1
+                    while dest.exists():
+                        dest = target_path / f"{stem}_{n}{suffix}"
+                        n += 1
+                try:
+                    shutil.copy2(avi, dest)
+                    success += 1
+                except Exception as exc:  # noqa: BLE001
+                    fail += 1
+                    self.export_log.emit(f"AVI \u5bfc\u51fa\u5931\u8d25: {exc}")
+            self.avi_export_done.emit(success, fail)
+
+        class AviExportThread(threading.Thread):
+            def __init__(self_inner):
+                super().__init__(daemon=True)
+
+            def run(self_inner):
+                _do_export()
+
+        self._avi_export_thread = AviExportThread()
+        self._avi_export_thread.start()
+
+    def _on_export_avi_done(self, success: int, fail: int) -> None:
+        self.export_avi_button.setEnabled(True)
+        self.export_avi_button.setText("\u5bfc\u51fa AVI")
         QMessageBox.information(self, TEXT["query_title"], f"\u5bfc\u51fa AVI \u5b8c\u6210\uff1a\u6210\u529f {success}\uff0c\u5931\u8d25 {fail}")
+        self.add_log(f"AVI \u5bfc\u51fa\u5b8c\u6210: \u6210\u529f {success}, \u5931\u8d25 {fail}")
 
     def export_selected_mp4(self) -> None:
         selected = self._get_selected_results()
@@ -1449,10 +1597,7 @@ class QueryDialog(QDialog):
             self.add_log(f"\u5220\u9664\u8bb0\u5f55\u5b8c\u6210: \u6210\u529f {success}, \u5931\u8d25 {fail}")
 
     def refresh_status_panel(self) -> None:
-        try:
-            total = len(self.query_manager.query())
-        except Exception:
-            total = 0
+        total = self.total_records
         self.total_records_status.setText(str(total))
         self.filtered_records_status.setText(str(len(self.results)))
         if not self.results:
@@ -1630,6 +1775,10 @@ class FullscreenPreviewWindow(QDialog):
 
 class ShippingMonitorWindow(QMainWindow):
     shared_storage_update = pyqtSignal(str, str)
+    thread_log = pyqtSignal(str)
+    camera_start_finished = pyqtSignal(object)
+    license_status_ready = pyqtSignal(object)
+    barcode_detected = pyqtSignal(str)
 
     def __init__(self) -> None:
         super().__init__()
@@ -1670,6 +1819,20 @@ class ShippingMonitorWindow(QMainWindow):
         self.last_known_good_camera_config: dict[str, object] | None = None
         self._camera_settings_source = "user config"
         self._selected_camera_profile: dict[str, object] | None = None
+        self._camera_start_thread: threading.Thread | None = None
+        self._camera_start_cancel_event = threading.Event()
+        self._camera_start_in_progress = False
+        self._camera_start_token = 0
+        self._pending_camera_low_fps_warning = ""
+        self._license_check_thread: threading.Thread | None = None
+        self._start_after_license_check = False
+        self._barcode_frame_condition = threading.Condition()
+        self._barcode_pending_frame = None
+        self._barcode_stop_event = threading.Event()
+        self._barcode_locked_code: str | None = None
+        self._barcode_locked_seen = 0.0
+        self._barcode_last_detect_monotonic = 0.0
+        self._barcode_thread: threading.Thread | None = None
         self.preview_timer = QTimer(self)
         self.preview_timer.setInterval(PREVIEW_INTERVAL_MS)
         self.preview_timer.timeout.connect(self.update_preview_frame)
@@ -1681,15 +1844,19 @@ class ShippingMonitorWindow(QMainWindow):
         self.resize(1200, 760)
         self._build_ui()
         self.shared_storage_update.connect(self._on_shared_storage_update)
+        self.thread_log.connect(self.add_log)
+        self.camera_start_finished.connect(self._on_camera_start_finished)
+        self.license_status_ready.connect(self._on_license_status_ready)
+        self.barcode_detected.connect(self._on_barcode_detected)
         self._create_menu_bar()
         self.add_log(f"GUI\u5df2\u542f\u52a8\uff0c\u5f53\u524d\u4e3a{release_channel}")
         self.load_config_and_license()
         self.update_recording_experience_status()
         self.status_timer.start()
-        QTimer.singleShot(0, self.show_license_startup_notice)
 
         # 条码扫描器（摄像头条码识别）
         self.barcode_scanner = BarcodeScanner()
+        self._start_barcode_worker()
 
     def _build_ui(self) -> None:
         central = QWidget(self)
@@ -1983,14 +2150,15 @@ class ShippingMonitorWindow(QMainWindow):
         QMessageBox.warning(self, "软件授权", f"授权无效，已阻止录像。\n{reason}")
         return False
 
-    def show_license_startup_notice(self) -> None:
+    def show_license_startup_notice(self, status=None) -> None:
         if self._license_warning_shown or self._is_smoke_test_mode():
             return
-        try:
-            status = configured_license_status(getattr(self, "config", None))
-        except Exception as exc:  # noqa: BLE001
-            self.add_log(f"授权状态读取失败：{exc}")
-            return
+        if status is None:
+            try:
+                status = configured_license_status(getattr(self, "config", None))
+            except Exception as exc:  # noqa: BLE001
+                self.add_log(f"授权状态读取失败：{exc}")
+                return
 
         if status.status == "trial_available":
             self.add_log("\u5f53\u524d\u672a\u6fc0\u6d3b\uff0c\u53ef\u514d\u8d39\u8bd5\u7528 30 \u5929\uff1b\u9996\u6b21\u70b9\u51fb\u201c\u5f00\u59cb\u201d\u65f6\u624d\u5f00\u59cb\u8ba1\u65f6\u3002")
@@ -2103,10 +2271,13 @@ class ShippingMonitorWindow(QMainWindow):
                 QApplication.processEvents()
                 time.sleep(0.5)
                 self._camera_settings_source = "user config"
+                # Camera start now runs in a worker thread; its own failure path
+                # performs the last-known-good rollback and retry.
                 self.on_start_clicked()
-                applied = self.camera is not None and self.camera.is_opened()
-            else:
-                applied = self._probe_camera_settings(self.config, "user config")
+                self.add_log("camera settings restart requested")
+                return
+
+            applied = self._probe_camera_settings(self.config, "user config")
 
             if applied:
                 self.last_known_good_camera_config = self._camera_settings_snapshot(self.config)
@@ -2576,6 +2747,8 @@ class ShippingMonitorWindow(QMainWindow):
 
         start_button = QPushButton(TEXT["start"])
         stop_button = QPushButton(TEXT["stop_preview"])
+        self.start_button = start_button
+        self.stop_button = stop_button
         query_button = QPushButton(TEXT["open_query"])
         recordings_button = QPushButton(TEXT["open_recordings"])
         current_video_button = QPushButton("打开当前录像")
@@ -2642,11 +2815,43 @@ class ShippingMonitorWindow(QMainWindow):
             self.disk_status.setText(TEXT["not_checked"])
             return
 
+        self.license_status.setText(TEXT["license_checking"])
+        self._start_license_check()
+
+    def _start_license_check(self) -> None:
+        if self._license_check_thread is not None and self._license_check_thread.is_alive():
+            return
+        self._license_check_thread = threading.Thread(
+            target=self._license_check_worker,
+            name="license-status-check",
+            daemon=True,
+        )
+        self._license_check_thread.start()
+
+    def _license_check_worker(self) -> None:
         try:
-            self.license_status.setText(license_status_display(configured_license_status(self.config)))
-        except Exception as exc:
+            # Warm the machine-code cache in a worker thread on first launch.
+            get_machine_code()
+            if self.config is None:
+                payload: dict[str, object] = {"ok": False, "error": "config_not_loaded"}
+            else:
+                payload = {"ok": True, "status": configured_license_status(self.config)}
+        except Exception as exc:  # noqa: BLE001
+            payload = {"ok": False, "error": str(exc)}
+        self.license_status_ready.emit(payload)
+
+    def _on_license_status_ready(self, payload) -> None:
+        if not isinstance(payload, dict) or not payload.get("ok"):
+            error = payload.get("error") if isinstance(payload, dict) else payload
             self.license_status.setText(TEXT["not_verified"])
-            self.add_log(f"authorization status unavailable: {exc}")
+            self.add_log(f"authorization status unavailable: {error}")
+        else:
+            status = payload.get("status")
+            self.license_status.setText(license_status_display(status))
+            self.show_license_startup_notice(status)
+        if self._start_after_license_check:
+            self._start_after_license_check = False
+            QTimer.singleShot(0, self.on_start_clicked)
 
     def apply_config_status(self) -> None:
         if self.config is None:
@@ -2896,6 +3101,9 @@ class ShippingMonitorWindow(QMainWindow):
         QMessageBox.warning(self, TEXT["license_fail_title"], self.license_error)
 
     def add_log(self, message: str) -> None:
+        if threading.current_thread() is not threading.main_thread():
+            self.thread_log.emit(str(message))
+            return
         timestamp = datetime.now().strftime("%H:%M:%S")
         line = f"[{timestamp}] {message}"
         self.log_box.append(line)
@@ -3134,7 +3342,8 @@ class ShippingMonitorWindow(QMainWindow):
                 "USB \u63a5\u53e3\u6216\u964d\u4f4e\u5206\u8fa8\u7387\u3002"
             )
             self.add_log(warning)
-            if not self._is_smoke_test_mode():
+            self._pending_camera_low_fps_warning = warning
+            if not self._is_smoke_test_mode() and threading.current_thread() is threading.main_thread():
                 QMessageBox.warning(self, "\u6444\u50cf\u5934\u5e27\u7387\u8f83\u4f4e", warning)
         return True
 
@@ -3142,8 +3351,18 @@ class ShippingMonitorWindow(QMainWindow):
         self.add_log("start_button_clicked")
         self.add_log("on_start_clicked begin")
         try:
+            if self._camera_start_in_progress:
+                self.add_log("camera_start_already_in_progress")
+                return
+
             if self.preview_timer.isActive() and self.camera is not None and self.camera.is_opened():
                 self.add_log("\u6444\u50cf\u5934\u5df2\u5728\u9884\u89c8\u4e2d")
+                return
+
+            if self._license_check_thread is not None and self._license_check_thread.is_alive():
+                self._start_after_license_check = True
+                self.camera_status.setText(TEXT["license_checking"])
+                self.add_log("\u6388\u6743\u72b6\u6001\u68c0\u6d4b\u4e2d\uff0c\u5b8c\u6210\u540e\u5c06\u81ea\u52a8\u542f\u52a8\u6444\u50cf\u5934")
                 return
 
             if not self.ensure_recording_authorized(prompt_for_activation=True):
@@ -3154,7 +3373,177 @@ class ShippingMonitorWindow(QMainWindow):
                 self.add_log("\u6444\u50cf\u5934\u542f\u52a8\u5931\u8d25\uff1a\u914d\u7f6e\u672a\u6210\u529f\u8bfb\u53d6")
                 return
 
-            if not self._prepare_camera_quality_selection():
+            self._launch_camera_start()
+        except Exception as e:
+            self.add_log(f"ERROR: on_start_clicked \u5f02\u5e38: {e}")
+
+            import traceback
+            traceback.print_exc()
+
+    def _launch_camera_start(self) -> None:
+        if self._camera_start_thread is not None and self._camera_start_thread.is_alive():
+            self.add_log("camera_start_already_in_progress")
+            return
+        self._camera_start_cancel_event.clear()
+        self._camera_start_in_progress = True
+        self._camera_start_token += 1
+        token = self._camera_start_token
+        self._pending_camera_low_fps_warning = ""
+        self.start_button.setEnabled(False)
+        self.stop_button.setText("\u53d6\u6d88\u542f\u52a8")
+        self.stop_button.setEnabled(True)
+        self.camera_status.setText(TEXT["camera_starting"])
+        self.add_log("camera_start_worker_begin")
+        self._camera_start_thread = threading.Thread(
+            target=self._camera_start_worker,
+            args=(token,),
+            name="camera-start",
+            daemon=True,
+        )
+        self._camera_start_thread.start()
+
+    def _camera_start_cancelled(self, token: int) -> bool:
+        return self._camera_start_cancel_event.is_set() or token != self._camera_start_token
+
+    def _emit_camera_start_result(self, token: int, payload: dict[str, object]) -> None:
+        payload["token"] = token
+        self.camera_start_finished.emit(payload)
+
+    def _camera_start_worker(self, token: int) -> None:
+        try:
+            if self._camera_start_cancelled(token):
+                self._emit_camera_start_result(token, {"ok": False, "cancelled": True})
+                return
+
+            prepared = self._prepare_camera_quality_selection()
+            if self._camera_start_cancelled(token):
+                self._emit_camera_start_result(token, {"ok": False, "cancelled": True})
+                return
+            if not prepared:
+                self._emit_camera_start_result(token, {"ok": False, "stage": "probe_failed"})
+                return
+
+            settings_source = self._camera_settings_source
+            camera = self._create_camera_from_config(settings_source)
+            opened = camera.open()
+            if self._camera_start_cancelled(token):
+                try:
+                    camera.release()
+                except Exception:  # noqa: BLE001
+                    pass
+                self._emit_camera_start_result(token, {"ok": False, "cancelled": True})
+                return
+            if opened:
+                self._emit_camera_start_result(
+                    token,
+                    {
+                        "ok": True,
+                        "camera": camera,
+                        "settings_source": settings_source,
+                        "low_fps_warning": self._pending_camera_low_fps_warning,
+                    },
+                )
+                return
+
+            reason = camera.state.last_error or "\u672a\u77e5\u9519\u8bef"
+            self.add_log(f"\u6444\u50cf\u5934\u542f\u52a8\u5931\u8d25\uff1a{reason}")
+            try:
+                camera.release()
+            except Exception:  # noqa: BLE001
+                pass
+            self._write_camera_quality_cache(None)
+            self._selected_camera_profile = None
+
+            if settings_source != "automatic probe" and self._auto_select_available_camera():
+                self._emit_camera_start_result(
+                    token,
+                    {
+                        "ok": False,
+                        "stage": "open_failed",
+                        "retry": True,
+                        "reason": reason,
+                        "settings_source": settings_source,
+                    },
+                )
+                return
+            current_settings = self._camera_settings_snapshot(self.config)
+            rollback_settings = self.last_known_good_camera_config
+            if (
+                rollback_settings
+                and current_settings != rollback_settings
+                and settings_source != "rollback"
+                and not self._camera_start_cancelled(token)
+            ):
+                self._emit_camera_start_result(
+                    token,
+                    {
+                        "ok": False,
+                        "stage": "open_failed",
+                        "rollback": True,
+                        "reason": reason,
+                        "settings_source": settings_source,
+                    },
+                )
+                return
+            self._emit_camera_start_result(
+                token,
+                {
+                    "ok": False,
+                    "stage": "open_failed",
+                    "reason": reason,
+                    "settings_source": settings_source,
+                },
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.add_log(f"camera_start_worker failed: {exc}")
+            self._emit_camera_start_result(
+                token,
+                {"ok": False, "stage": "error", "reason": str(exc)},
+            )
+
+    def _restore_camera_buttons(self) -> None:
+        self.start_button.setEnabled(True)
+        self.stop_button.setText(TEXT["stop_preview"])
+        self.stop_button.setEnabled(True)
+
+    def _cancel_camera_start(self) -> None:
+        self._camera_start_cancel_event.set()
+        self.camera_status.setText("\u6b63\u5728\u53d6\u6d88\u2026")
+        self.add_log("camera_start_cancel_requested")
+        self.stop_button.setEnabled(False)
+
+    def _on_camera_start_finished(self, payload) -> None:
+        if not isinstance(payload, dict):
+            return
+        token = int(payload.get("token", 0))
+        stale = token != self._camera_start_token
+        camera = payload.get("camera")
+        if stale:
+            if camera is not None:
+                try:
+                    camera.release()
+                except Exception:  # noqa: BLE001
+                    pass
+            return
+
+        self._camera_start_in_progress = False
+        self._restore_camera_buttons()
+
+        if bool(payload.get("cancelled")) or self._camera_start_cancel_event.is_set():
+            if camera is not None:
+                try:
+                    camera.release()
+                except Exception:  # noqa: BLE001
+                    pass
+            self.camera_status.setText(TEXT["camera_start_cancelled"])
+            self._pending_camera_low_fps_warning = ""
+            self.add_log("camera_start_cancelled")
+            return
+
+        if not payload.get("ok"):
+            stage = str(payload.get("stage") or "")
+            reason = str(payload.get("reason") or "")
+            if stage == "probe_failed":
                 self.camera_status.setText(TEXT["start_failed"])
                 self.add_log("camera_probe_all_failed")
                 if not self._is_smoke_test_mode():
@@ -3168,50 +3557,48 @@ class ShippingMonitorWindow(QMainWindow):
                 self.add_log("on_start_clicked end")
                 return
 
-            self.camera = self._create_camera_from_config(self._camera_settings_source)
-            if not self.camera.open():
-                self.camera_status.setText(TEXT["start_failed"])
-                reason = self.camera.state.last_error or "\u672a\u77e5\u9519\u8bef"
-                self.add_log(f"\u6444\u50cf\u5934\u542f\u52a8\u5931\u8d25\uff1a{reason}")
-                try:
-                    self.camera.release()
-                except Exception:  # noqa: BLE001
-                    pass
-                self.camera = None
-                self._write_camera_quality_cache(None)
-                self._selected_camera_profile = None
-                if (
-                    self._camera_settings_source != "automatic probe"
-                    and self._auto_select_available_camera()
-                ):
-                    QTimer.singleShot(100, self.on_start_clicked)
-                    return
-                current_settings = self._camera_settings_snapshot(self.config)
+            if bool(payload.get("retry")):
+                self.add_log("camera settings apply failed")
+                self._camera_settings_source = str(payload.get("settings_source") or "automatic probe")
+                QTimer.singleShot(100, self.on_start_clicked)
+                return
+
+            if bool(payload.get("rollback")):
+                self.add_log("camera settings apply failed")
+                self.add_log("rollback to last known good")
                 rollback_settings = self.last_known_good_camera_config
-                if (
-                    rollback_settings
-                    and current_settings != rollback_settings
-                    and self._camera_settings_source != "rollback"
-                ):
-                    self.add_log("camera settings apply failed")
-                    self.add_log("rollback to last known good")
+                if rollback_settings:
                     self._write_camera_settings(rollback_settings)
                     self.config = get_config()
                     self._camera_settings_source = "rollback"
                     QTimer.singleShot(500, self.on_start_clicked)
                     return
-                if not self._is_smoke_test_mode():
-                    QMessageBox.warning(
-                        self,
-                        TEXT["camera_fail_title"],
-                        "\u672a\u627e\u5230\u53ef\u7528\u6444\u50cf\u5934\u3002Windows \u76f8\u673a\u53ef\u7528\u65f6\uff0c"
-                        "\u8bf7\u5c1d\u8bd5\u5173\u95ed\u76f8\u673a App \u540e\u91cd\u8bd5\uff0c"
-                        "\u6216\u91cd\u65b0\u63d2\u62d4\u6444\u50cf\u5934\u3002",
-                    )
-                self.add_log("camera_probe_all_failed")
-                self.add_log("on_start_clicked end")
-                return
 
+            self.camera_status.setText(TEXT["start_failed"])
+            self.add_log("camera_probe_all_failed")
+            if not self._is_smoke_test_mode():
+                QMessageBox.warning(
+                    self,
+                    TEXT["camera_fail_title"],
+                    "\u672a\u627e\u5230\u53ef\u7528\u6444\u50cf\u5934\u3002Windows \u76f8\u673a\u53ef\u7528\u65f6\uff0c"
+                    "\u8bf7\u5c1d\u8bd5\u5173\u95ed\u76f8\u673a App \u540e\u91cd\u8bd5\uff0c"
+                    "\u6216\u91cd\u65b0\u63d2\u62d4\u6444\u50cf\u5934\u3002",
+                )
+            self.add_log("on_start_clicked end")
+            return
+
+        if camera is None:
+            self.camera_status.setText(TEXT["start_failed"])
+            self.add_log("\u6444\u50cf\u5934\u542f\u52a8\u5931\u8d25\uff1a\u672a\u8fd4\u56de\u6444\u50cf\u5934\u5b9e\u4f8b")
+            return
+
+        self._pending_camera_low_fps_warning = str(payload.get("low_fps_warning") or "")
+        self._complete_camera_start(camera, str(payload.get("settings_source") or "user config"))
+
+    def _complete_camera_start(self, camera, settings_source: str) -> None:
+        try:
+            self._camera_settings_source = settings_source
+            self.camera = camera
             self.recorder = RecordingManager(
                 self.camera,
                 self.recordings_dir,
@@ -3248,13 +3635,19 @@ class ShippingMonitorWindow(QMainWindow):
             self._start_preview_timer()
             self.scan_input.setFocus()
             self.add_log("on_start_clicked end")
-
-        except Exception as e:
-            self.add_log(f"ERROR: on_start_clicked 异常: {e}")
-
+            warning = self._pending_camera_low_fps_warning
+            self._pending_camera_low_fps_warning = ""
+            if warning and not self._is_smoke_test_mode():
+                QMessageBox.warning(self, "\u6444\u50cf\u5934\u5e27\u7387\u8f83\u4f4e", warning)
+        except Exception as exc:  # noqa: BLE001
+            self.add_log(f"ERROR: _complete_camera_start \u5f02\u5e38: {exc}")
             import traceback
             traceback.print_exc()
+
     def on_stop_clicked(self) -> None:
+        if self._camera_start_in_progress:
+            self._cancel_camera_start()
+            return
         if not self.preview_timer.isActive() and (self.camera is None or not self.camera.is_opened()):
             self.add_log("\u5f53\u524d\u672a\u542f\u52a8\u9884\u89c8")
             return
@@ -3295,6 +3688,7 @@ class ShippingMonitorWindow(QMainWindow):
             self.camera_status.setText(TEXT["stopped"])
             self.recording_status.setText(TEXT["not_recording"])
             self.last_scan_monotonic = None
+            self._reset_barcode_detection_state()
             self.reset_frame_idle_state()
             self.update_recording_experience_status()
             self.add_log("\u6444\u50cf\u5934\u5df2\u91ca\u653e")
@@ -3327,16 +3721,27 @@ class ShippingMonitorWindow(QMainWindow):
             self.update_frame_motion_state(frame)
             self.latest_label_source_frame = frame.copy()
 
-            # Apply watermark first
-            display_frame = self._apply_watermark(frame.copy())
-            label_roi = None
-
-            # Draw the fixed label close-up guide on the preview only.
+            # Camera barcode recognition runs on a worker thread. Hand it a
+            # snapshot of the scan ROI only; the UI thread never waits on it.
             barcode_enabled = bool(
                 getattr(self.config, "barcode_scan_enabled", False)
                 or getattr(self.config, "enable_camera_barcode_scanner", False)
             )
+            if barcode_enabled:
+                if getattr(self.config, "barcode_roi_use_guide_area", True):
+                    h, w = frame.shape[:2]
+                    x1, y1, x2, y2 = self.calculate_barcode_roi(w, h)
+                    scan_frame = frame[y1:y2, x1:x2].copy()
+                else:
+                    scan_frame = frame.copy()
+                self._submit_barcode_frame(scan_frame)
 
+            # Apply the watermark in place on the display frame. Blending only
+            # the text area avoids full-frame copies and full-frame blending.
+            display_frame = self._apply_watermark(frame)
+            label_roi = None
+
+            # Draw the fixed label close-up guide on the preview only.
             if self._label_setting("label_closeup_enabled", True):
                 h, w = display_frame.shape[:2]
                 roi = self.calculate_barcode_roi(w, h)
@@ -3351,30 +3756,12 @@ class ShippingMonitorWindow(QMainWindow):
                 gap_length = int(getattr(self.config, "barcode_roi_gap_length", 10))
                 self.draw_dashed_rectangle(display_frame, roi, color, thickness, dash_length, gap_length)
 
-            # Camera barcode recognition (use ROI area if enabled)
-            # Compatible with both old and new config keys
-            barcode_enabled = bool(
-                getattr(self.config, "barcode_scan_enabled", False)
-                or getattr(self.config, "enable_camera_barcode_scanner", False)
-            )
-            
-            if barcode_enabled:
-                scan_frame = frame
-                if getattr(self.config, "barcode_roi_use_guide_area", True):
-                    h, w = frame.shape[:2]
-                    roi = self.calculate_barcode_roi(w, h)
-                    x1, y1, x2, y2 = roi
-                    scan_frame = frame[y1:y2, x1:x2]
-                code = self.barcode_scanner.detect(scan_frame)
-                if code:
-                    self.add_log(f"摄像头识别到单号：{code}")
-                    self.scan_input.setText(code)
-                    self.on_tracking_entered()
-
+            # cvtColor already returns a new array, so QImage can wrap it
+            # without an extra full-frame .copy(); QPixmap.fromImage copies.
             rgb_frame = cv2.cvtColor(display_frame, cv2.COLOR_BGR2RGB)
             height, width, channel_count = rgb_frame.shape
             bytes_per_line = channel_count * width
-            image = QImage(rgb_frame.data, width, height, bytes_per_line, QImage.Format_RGB888).copy()
+            image = QImage(rgb_frame.data, width, height, bytes_per_line, QImage.Format_RGB888)
             if label_roi is not None:
                 self.draw_label_roi_hint(image, label_roi)
             pixmap = QPixmap.fromImage(image)
@@ -3382,7 +3769,7 @@ class ShippingMonitorWindow(QMainWindow):
             scaled = pixmap.scaled(
                 self.preview_area.size(),
                 Qt.KeepAspectRatio,
-                Qt.SmoothTransformation,
+                Qt.FastTransformation,
             )
             self.preview_area.setPixmap(scaled)
             if self.fullscreen_preview_window is not None:
@@ -3465,7 +3852,7 @@ class ShippingMonitorWindow(QMainWindow):
         return frame
 
     def _apply_watermark(self, frame):
-        """Apply watermark to frame for preview display."""
+        """Apply watermark to frame for preview display (in place)."""
         if self.config is None or cv2 is None:
             return frame
         if not getattr(self.config, "watermark_enabled", True):
@@ -3477,10 +3864,8 @@ class ShippingMonitorWindow(QMainWindow):
         text = getattr(self.config, "watermark_text", "") or tracking
         # Always show watermark - use "--" as placeholder if no tracking number
         display_text = text if text else "--"
-        
-        frame_out = frame.copy()
-        overlay = frame_out.copy()
-        now_text = __import__("datetime").datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         lines = [display_text, now_text]
         font = cv2.FONT_HERSHEY_SIMPLEX
         font_scale = max(0.3, float(getattr(self.config, "watermark_font_scale", 0.9)))
@@ -3500,20 +3885,141 @@ class ShippingMonitorWindow(QMainWindow):
         position = getattr(self.config, "watermark_position", "top_left")
         x, y = margin, margin
         if position == "top_right":
-            x = max(margin, frame_out.shape[1] - block_width - margin)
+            x = max(margin, frame.shape[1] - block_width - margin)
         elif position == "bottom_left":
-            y = max(margin, frame_out.shape[0] - block_height - margin)
+            y = max(margin, frame.shape[0] - block_height - margin)
         elif position == "bottom_right":
-            x = max(margin, frame_out.shape[1] - block_width - margin)
-            y = max(margin, frame_out.shape[0] - block_height - margin)
+            x = max(margin, frame.shape[1] - block_width - margin)
+            y = max(margin, frame.shape[0] - block_height - margin)
+
+        # Blend only the text area instead of copying and blending the full frame.
+        padding = outline_thickness + 2
+        x0 = max(0, x - padding)
+        y0 = max(0, y - padding)
+        x1 = min(frame.shape[1], x + block_width + padding)
+        y1 = min(frame.shape[0], y + block_height + padding)
+        target = frame[y0:y1, x0:x1]
+        overlay = target.copy()
+
         cur_y = y
         for idx, line in enumerate(lines):
-            tw, th = sizes[idx]
+            _tw, th = sizes[idx]
             by = cur_y + th
-            cv2.putText(overlay, line, (x, by), font, font_scale, (0, 0, 0), outline_thickness, cv2.LINE_AA)
-            cv2.putText(overlay, line, (x, by), font, font_scale, color, thickness, cv2.LINE_AA)
+            cv2.putText(
+                overlay,
+                line,
+                (x - x0, by - y0),
+                font,
+                font_scale,
+                (0, 0, 0),
+                outline_thickness,
+                cv2.LINE_AA,
+            )
+            cv2.putText(
+                overlay,
+                line,
+                (x - x0, by - y0),
+                font,
+                font_scale,
+                color,
+                thickness,
+                cv2.LINE_AA,
+            )
             cur_y += th + line_gap
-        return cv2.addWeighted(overlay, alpha, frame_out, 1 - alpha, 0)
+        cv2.addWeighted(overlay, alpha, target, 1 - alpha, 0, dst=target)
+        return frame
+
+    def _start_barcode_worker(self) -> None:
+        if self._barcode_thread is not None and self._barcode_thread.is_alive():
+            return
+        self._barcode_stop_event.clear()
+        self._barcode_thread = threading.Thread(
+            target=self._barcode_worker_loop,
+            name="barcode-scan",
+            daemon=True,
+        )
+        self._barcode_thread.start()
+
+    def _stop_barcode_worker(self) -> None:
+        self._barcode_stop_event.set()
+        with self._barcode_frame_condition:
+            self._barcode_pending_frame = None
+            self._barcode_frame_condition.notify_all()
+
+    def _submit_barcode_frame(self, frame) -> None:
+        if self._barcode_stop_event.is_set():
+            return
+        with self._barcode_frame_condition:
+            self._barcode_pending_frame = frame
+            self._barcode_frame_condition.notify_all()
+
+    def _barcode_interval_seconds(self) -> float:
+        interval_ms = int(getattr(self.config, "barcode_scan_interval_ms", 300) or 300)
+        return max(0.05, interval_ms / 1000.0)
+
+    def _barcode_debounce_seconds(self) -> float:
+        seconds = float(getattr(self.config, "barcode_scan_debounce_seconds", 5) or 5)
+        return max(0.0, seconds)
+
+    def _barcode_worker_loop(self) -> None:
+        while not self._barcode_stop_event.is_set():
+            with self._barcode_frame_condition:
+                while (
+                    self._barcode_pending_frame is None
+                    and not self._barcode_stop_event.is_set()
+                ):
+                    self._barcode_frame_condition.wait(0.2)
+                if self._barcode_stop_event.is_set():
+                    return
+                frame = self._barcode_pending_frame
+                self._barcode_pending_frame = None
+            if frame is None:
+                continue
+
+            remaining = self._barcode_interval_seconds() - (
+                time.monotonic() - self._barcode_last_detect_monotonic
+            )
+            if remaining > 0:
+                self._barcode_stop_event.wait(remaining)
+                with self._barcode_frame_condition:
+                    if self._barcode_pending_frame is not None:
+                        frame = self._barcode_pending_frame
+                        self._barcode_pending_frame = None
+                if self._barcode_stop_event.is_set():
+                    return
+
+            try:
+                code = self.barcode_scanner.detect(frame, apply_debounce=False)
+            except Exception as exc:  # noqa: BLE001
+                self.add_log(f"ERROR: barcode worker detect failed: {exc}")
+                code = None
+
+            now = time.monotonic()
+            self._barcode_last_detect_monotonic = now
+            if code:
+                if code == self._barcode_locked_code:
+                    self._barcode_locked_seen = now
+                    continue
+                # Latch the code until it leaves the frame; the latch is released
+                # after barcode_scan_debounce_seconds without a detection.
+                self._barcode_locked_code = code
+                self._barcode_locked_seen = now
+                self.barcode_detected.emit(code)
+            elif self._barcode_locked_code is not None:
+                if now - self._barcode_locked_seen >= self._barcode_debounce_seconds():
+                    self._barcode_locked_code = None
+                    self._barcode_locked_seen = 0.0
+
+    def _on_barcode_detected(self, code: str) -> None:
+        self.add_log(f"摄像头识别到单号：{code}")
+        self.scan_input.setText(code)
+        self.on_tracking_entered()
+
+    def _reset_barcode_detection_state(self) -> None:
+        with self._barcode_frame_condition:
+            self._barcode_pending_frame = None
+        self._barcode_locked_code = None
+        self._barcode_locked_seen = 0.0
 
     def calculate_barcode_roi(self, frame_width: int, frame_height: int) -> tuple:
         """按面单比例 76:130 计算条码识别 ROI 区域。"""
@@ -4748,6 +5254,8 @@ class ShippingMonitorWindow(QMainWindow):
         QTimer.singleShot(300, self.close)
 
     def closeEvent(self, event) -> None:
+        self._camera_start_cancel_event.set()
+        self._stop_barcode_worker()
         self.stop_lan_query_server(show_message=False)
         if self.fullscreen_preview_window is not None:
             self.fullscreen_preview_window.close()
