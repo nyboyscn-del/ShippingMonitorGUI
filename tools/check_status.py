@@ -5,7 +5,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from safe_print import safe_print
 
-with open('D:/AI_Projects/shipping-monitor-gui-final/src/gui_main.py', 'r', encoding='utf-8') as f:
+GUI_SOURCE = Path(__file__).resolve().parents[1] / "src" / "gui_main.py"
+with GUI_SOURCE.open("r", encoding="utf-8") as f:
     s = f.read()
 
 # Check status panel layout

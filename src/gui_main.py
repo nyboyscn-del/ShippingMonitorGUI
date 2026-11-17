@@ -10,9 +10,11 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import platform
+from collections import OrderedDict
 
 if platform.system() == "Windows":
     import winsound
@@ -72,6 +74,7 @@ from config_manager import (
     get_config,
     resolve_storage_path,
     runtime_root,
+    write_config_value,
 )
 
 try:
@@ -94,7 +97,6 @@ from recording_manager import (
     cleanup_old_recordings,
     convert_avi_to_mp4,
     find_ffmpeg_executable,
-    has_min_free_disk_space,
 )
 from barcode_scanner import BarcodeScanner
 from license_code_manager import (
@@ -106,12 +108,17 @@ from license_code_manager import (
     is_recording_allowed,
 )
 from safe_print import configure_runtime_logging, safe_print
+import frame_processing
 from version import __project_name__, __version__, __build__, __copyright__, release_channel
 
 
 DEFAULT_RECORDINGS_DIR = resolve_storage_path("recordings")
 RETENTION_CLEANUP_INTERVAL_SECONDS = 60 * 60
 PREVIEW_INTERVAL_MS = 33
+TRACKING_MEMORY_RETENTION_SECONDS = 7 * 24 * 60 * 60
+DISK_STATUS_REFRESH_SECONDS = 5.0
+SHARED_STORAGE_COPY_CLOSE_TIMEOUT_SECONDS = 5.0
+RUNTIME_LOG_LOCK = threading.Lock()
 RESOLUTION_OPTIONS = ["3840x2160", "2560x1440", "1920x1080", "1600x900", "1280x720"]
 WATERMARK_POSITIONS = [
     ("\u5de6\u4e0a", "top_left"),
@@ -1808,8 +1815,10 @@ class ShippingMonitorWindow(QMainWindow):
         self.runtime_log_path = self._initialize_runtime_log_file()
         self.recent_tracking_records: list[tuple[str, str, str]] = []
         self.last_tracking_number: str | None = None
-        self.completed_tracking_numbers: set[str] = set()
-        self.tracking_last_seen: dict[str, float] = {}
+        # In-process duplicate guards only: they are cleared on restart and on
+        # shift handover, while OrderedDict + pruning keeps memory bounded.
+        self.completed_tracking_numbers: OrderedDict[str, float] = OrderedDict()
+        self.tracking_last_seen: OrderedDict[str, float] = OrderedDict()
         self.latest_preview_pixmap: QPixmap | None = None
         self.latest_label_source_frame = None
         self.fullscreen_preview_window: FullscreenPreviewWindow | None = None
@@ -1817,6 +1826,13 @@ class ShippingMonitorWindow(QMainWindow):
         self.lan_query_access_url = ""
         self._shared_copy_scheduled: set[str] = set()
         self._shared_copy_lock = threading.Lock()
+        self._shared_copy_threads: list[threading.Thread] = []
+        self._shared_pending_lock = threading.Lock()
+        self._disk_status_lock = threading.Lock()
+        self._disk_free_gb: float | None = None
+        self._disk_error = ""
+        self._disk_refresh_stop = threading.Event()
+        self._disk_refresh_thread: threading.Thread | None = None
         self.last_known_good_camera_config: dict[str, object] | None = None
         self._camera_settings_source = "user config"
         self._selected_camera_profile: dict[str, object] | None = None
@@ -1853,6 +1869,7 @@ class ShippingMonitorWindow(QMainWindow):
         self.add_log(f"GUI\u5df2\u542f\u52a8\uff0c\u5f53\u524d\u4e3a{release_channel}")
         self.load_config_and_license()
         self.update_recording_experience_status()
+        self._start_disk_status_worker()
         self.status_timer.start()
 
         # 条码扫描器（摄像头条码识别）
@@ -2479,11 +2496,9 @@ class ShippingMonitorWindow(QMainWindow):
         if self.config is None:
             return
         self.config = replace(self.config, barcode_scan_enabled=checked)
-        # 保存到配置文件
+        # 统一走 config_manager 的原子写入，未知键和 label_* 不再被 asdict 丢掉。
         try:
-            import json, dataclasses
-            with open(RUNTIME_CONFIG, 'w', encoding='utf-8') as f:
-                json.dump(dataclasses.asdict(self.config), f, ensure_ascii=False, indent=2)
+            write_config_value(RUNTIME_CONFIG, "barcode_scan_enabled", checked)
         except Exception as e:
             self.add_log(f"保存配置失败: {e}")
         status = "启用（待升级）" if checked else "禁用"
@@ -2588,18 +2603,19 @@ class ShippingMonitorWindow(QMainWindow):
         return runtime_root() / "logs" / "ShippingMonitorGUI.log"
 
     def _initialize_runtime_log_file(self) -> Path:
-        log_path = self._runtime_log_path()
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        if not log_path.exists() or log_path.stat().st_size == 0:
-            with log_path.open("a", encoding="utf-8") as handle:
-                handle.write("Log file initialized.\n")
+        # The shared rotating handler (5 MB x 5) is the only file writer; this
+        # helper just guarantees the handler exists and returns its path.
+        log_path = configure_runtime_logging(self._runtime_log_path())
         return log_path
 
     def _append_runtime_log(self, line: str) -> None:
         try:
             log_path = getattr(self, "runtime_log_path", None) or self._initialize_runtime_log_file()
-            with Path(log_path).open("a", encoding="utf-8") as handle:
-                handle.write(f"{line}\n")
+            # The handler is thread-safe, and the explicit lock keeps both the
+            # UI thread and the recording thread strictly serialized.
+            with RUNTIME_LOG_LOCK:
+                configure_runtime_logging(log_path)
+                logging.getLogger("ShippingMonitorGUI").info(str(line))
         except Exception:  # noqa: BLE001
             return
 
@@ -2953,30 +2969,69 @@ class ShippingMonitorWindow(QMainWindow):
         except Exception:  # noqa: BLE001
             logging.exception("retention cleanup failed: path=%s", storage_path)
 
+    def _start_disk_status_worker(self) -> None:
+        if self._disk_refresh_thread is not None and self._disk_refresh_thread.is_alive():
+            return
+        self._disk_refresh_stop.clear()
+        self._disk_refresh_thread = threading.Thread(
+            target=self._disk_status_worker,
+            name="disk-status",
+            daemon=True,
+        )
+        self._disk_refresh_thread.start()
+
+    def _stop_disk_status_worker(self) -> None:
+        self._disk_refresh_stop.set()
+        thread = self._disk_refresh_thread
+        if thread is not None and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=1.5)
+        self._disk_refresh_thread = None
+
+    def _disk_status_worker(self) -> None:
+        while not self._disk_refresh_stop.is_set():
+            free_gb: float | None = None
+            error = ""
+            try:
+                free_gb = get_free_disk_gb(self.recordings_dir)
+            except OSError as exc:
+                error = str(exc)
+                logging.warning("Disk free space check failed: %s", exc)
+            with self._disk_status_lock:
+                self._disk_free_gb = free_gb
+                self._disk_error = error
+            if self._disk_refresh_stop.wait(DISK_STATUS_REFRESH_SECONDS):
+                break
+
+    def _cached_disk_status(self) -> tuple[float | None, str]:
+        with self._disk_status_lock:
+            return self._disk_free_gb, self._disk_error
+
     def update_disk_status(self, log_event: bool = False) -> bool:
         if self.config is None:
             return True
 
-        try:
-            free_gb = get_free_disk_gb(self.recordings_dir)
-            if log_event:
-                self.add_log(f"free disk GB: {free_gb:.2f}")
-            if free_gb < float(self.config.min_free_disk_gb):
-                self.disk_status.setText(TEXT["disk_low"])
-                if log_event:
-                    self.add_log(
-                        f"\u78c1\u76d8\u7a7a\u95f4\u8b66\u544a\uff1a"
-                        f"\u5269\u4f59 {free_gb:.2f} GB\uff0c"
-                        f"\u4f4e\u4e8e {self.config.min_free_disk_gb} GB"
-                    )
-                return False
-            else:
-                self.disk_status.setText(f"{free_gb:.2f} GB / min {float(self.config.min_free_disk_gb):.2f} GB")
-                return True
-        except OSError as exc:
-            self.disk_status.setText(TEXT["disk_failed"])
-            self.add_log(f"\u78c1\u76d8\u7a7a\u95f4\u68c0\u6d4b\u5931\u8d25\uff1a{exc}")
+        # UI reads the background worker's cache; it never calls disk_usage itself.
+        self._start_disk_status_worker()
+        free_gb, error = self._cached_disk_status()
+        if free_gb is None:
+            self.disk_status.setText(TEXT["disk_failed"] if error else TEXT["not_checked"])
+            if log_event and error:
+                self.add_log(f"\u78c1\u76d8\u7a7a\u95f4\u68c0\u6d4b\u5931\u8d25\uff1a{error}")
             return True
+
+        if log_event:
+            self.add_log(f"free disk GB: {free_gb:.2f}")
+        if free_gb < float(self.config.min_free_disk_gb):
+            self.disk_status.setText(TEXT["disk_low"])
+            if log_event:
+                self.add_log(
+                    f"\u78c1\u76d8\u7a7a\u95f4\u8b66\u544a\uff1a"
+                    f"\u5269\u4f59 {free_gb:.2f} GB\uff0c"
+                    f"\u4f4e\u4e8e {self.config.min_free_disk_gb} GB"
+                )
+            return False
+        self.disk_status.setText(f"{free_gb:.2f} GB / min {float(self.config.min_free_disk_gb):.2f} GB")
+        return True
 
     def update_runtime_status(self) -> None:
         if self.config is None:
@@ -2993,6 +3048,7 @@ class ShippingMonitorWindow(QMainWindow):
 
         self.update_idle_countdown()
         self.update_recording_experience_status()
+        self._prune_tracking_memory()
         self.maybe_run_retention_cleanup()
 
     def update_recording_experience_status(self) -> None:
@@ -3108,11 +3164,10 @@ class ShippingMonitorWindow(QMainWindow):
         timestamp = datetime.now().strftime("%H:%M:%S")
         line = f"[{timestamp}] {message}"
         self.log_box.append(line)
-        self._append_runtime_log(line)
+        self._append_runtime_log(str(message))
 
     def add_recording_diagnostic_log(self, message: str) -> None:
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        self._append_runtime_log(f"[{timestamp}] {message}")
+        self._append_runtime_log(str(message))
 
     def _create_camera_from_config(self, settings_source: str) -> CameraManager:
         profile = self._selected_camera_profile or {}
@@ -3724,11 +3779,7 @@ class ShippingMonitorWindow(QMainWindow):
 
             # Camera barcode recognition runs on a worker thread. Hand it a
             # snapshot of the scan ROI only; the UI thread never waits on it.
-            barcode_enabled = bool(
-                getattr(self.config, "barcode_scan_enabled", False)
-                or getattr(self.config, "enable_camera_barcode_scanner", False)
-            )
-            if barcode_enabled:
+            if bool(getattr(self.config, "barcode_scan_enabled", False)):
                 if getattr(self.config, "barcode_roi_use_guide_area", True):
                     h, w = frame.shape[:2]
                     x1, y1, x2, y2 = self.calculate_barcode_roi(w, h)
@@ -3833,102 +3884,17 @@ class ShippingMonitorWindow(QMainWindow):
             self.frame_motion_status.setText(TEXT["motion_active"])
 
     def _apply_camera_calibration(self, frame):
-        """对帧应用摄像头矫正（亮度/对比度/ROI裁切）"""
-        if self.config is None or cv2 is None:
-            return frame
-        if not getattr(self.config, "camera_calibration_enabled", False):
-            return frame
-        alpha = 1.0 + getattr(self.config, "camera_calibration_contrast", 0) / 100.0
-        beta = float(getattr(self.config, "camera_calibration_brightness", 0))
-        if alpha != 1.0 or beta != 0.0:
-            frame = cv2.convertScaleAbs(frame, alpha=alpha, beta=beta)
-        if getattr(self.config, "camera_calibration_roi_enabled", False):
-            roi_x = int(getattr(self.config, "camera_calibration_roi_x", 0))
-            roi_y = int(getattr(self.config, "camera_calibration_roi_y", 0))
-            roi_w = int(getattr(self.config, "camera_calibration_roi_w", 0))
-            roi_h = int(getattr(self.config, "camera_calibration_roi_h", 0))
-            h, w = frame.shape[:2]
-            if roi_w > 0 and roi_h > 0 and roi_x + roi_w <= w and roi_y + roi_h <= h:
-                frame = frame[roi_y:roi_y + roi_h, roi_x:roi_x + roi_w]
-        return frame
+        """对帧应用摄像头矫正（与录像共用 frame_processing 实现）。"""
+        return frame_processing.apply_camera_calibration(frame, self.config)
 
     def _apply_watermark(self, frame):
-        """Apply watermark to frame for preview display (in place)."""
+        """Apply the shared watermark to the preview frame (in place)."""
         if self.config is None or cv2 is None:
             return frame
-        if not getattr(self.config, "watermark_enabled", True):
-            return frame
-        # Always show watermark: tracking number (or -- if none) + current time
         tracking = getattr(self, "current_tracking_number", None) or ""
         if not tracking and self.recorder is not None:
             tracking = self.recorder.current_tracking_number or ""
-        text = getattr(self.config, "watermark_text", "") or tracking
-        # Always show watermark - use "--" as placeholder if no tracking number
-        display_text = text if text else "--"
-
-        now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        lines = [display_text, now_text]
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        font_scale = max(0.3, float(getattr(self.config, "watermark_font_scale", 0.9)))
-        thickness = max(1, int(round(font_scale * 2)))
-        outline_thickness = thickness + 2
-        line_gap = max(8, int(12 * font_scale))
-        margin = max(16, int(24 * font_scale))
-        color_val = getattr(self.config, "watermark_color", "#00FF00") or "#00FF00"
-        r = int(color_val[1:3], 16)
-        g = int(color_val[3:5], 16)
-        b = int(color_val[5:7], 16)
-        color = (b, g, r)  # BGR
-        alpha = max(0.0, min(1.0, float(getattr(self.config, "watermark_opacity", 0.75))))
-        sizes = [cv2.getTextSize(line, font, font_scale, thickness)[0] for line in lines]
-        block_width = max(w for w, _h in sizes)
-        block_height = sum(h for _w, h in sizes) + line_gap * (len(lines) - 1)
-        position = getattr(self.config, "watermark_position", "top_left")
-        x, y = margin, margin
-        if position == "top_right":
-            x = max(margin, frame.shape[1] - block_width - margin)
-        elif position == "bottom_left":
-            y = max(margin, frame.shape[0] - block_height - margin)
-        elif position == "bottom_right":
-            x = max(margin, frame.shape[1] - block_width - margin)
-            y = max(margin, frame.shape[0] - block_height - margin)
-
-        # Blend only the text area instead of copying and blending the full frame.
-        padding = outline_thickness + 2
-        x0 = max(0, x - padding)
-        y0 = max(0, y - padding)
-        x1 = min(frame.shape[1], x + block_width + padding)
-        y1 = min(frame.shape[0], y + block_height + padding)
-        target = frame[y0:y1, x0:x1]
-        overlay = target.copy()
-
-        cur_y = y
-        for idx, line in enumerate(lines):
-            _tw, th = sizes[idx]
-            by = cur_y + th
-            cv2.putText(
-                overlay,
-                line,
-                (x - x0, by - y0),
-                font,
-                font_scale,
-                (0, 0, 0),
-                outline_thickness,
-                cv2.LINE_AA,
-            )
-            cv2.putText(
-                overlay,
-                line,
-                (x - x0, by - y0),
-                font,
-                font_scale,
-                color,
-                thickness,
-                cv2.LINE_AA,
-            )
-            cur_y += th + line_gap
-        cv2.addWeighted(overlay, alpha, target, 1 - alpha, 0, dst=target)
-        return frame
+        return frame_processing.apply_watermark_for_config(frame, self.config, tracking)
 
     def _start_barcode_worker(self) -> None:
         if self._barcode_thread is not None and self._barcode_thread.is_alive():
@@ -4131,14 +4097,9 @@ class ShippingMonitorWindow(QMainWindow):
             painter.end()
 
     def _label_setting(self, key: str, default: bool) -> bool:
-        value = getattr(self.config, key, None) if self.config is not None else None
-        if value is not None:
-            return bool(value)
-        try:
-            with RUNTIME_CONFIG.open("r", encoding="utf-8") as handle:
-                return bool(json.load(handle).get(key, default))
-        except (OSError, ValueError, TypeError):
+        if self.config is None:
             return default
+        return bool(getattr(self.config, key, default))
 
     def save_label_snapshot(self, tracking_number: str, video_path: str | Path) -> Path | None:
         if not self._label_setting("label_closeup_enabled", True) or not self._label_setting(
@@ -4245,6 +4206,8 @@ class ShippingMonitorWindow(QMainWindow):
             self.add_log(f"声音提示播放失败：{exc}")
 
     def _play_success_beep(self) -> None:
+        if self.config is None or not bool(getattr(self.config, "beep_enabled", True)):
+            return
         self.play_sound_hint("scan_success")
 
     def update_watchdog_status(self) -> None:
@@ -4739,6 +4702,11 @@ class ShippingMonitorWindow(QMainWindow):
             name="shared-storage-copy",
             daemon=True,
         )
+        with self._shared_copy_lock:
+            self._shared_copy_threads = [
+                existing for existing in self._shared_copy_threads if existing.is_alive()
+            ]
+            self._shared_copy_threads.append(thread)
         thread.start()
         return thread
 
@@ -4752,6 +4720,7 @@ class ShippingMonitorWindow(QMainWindow):
             "\u6b63\u5728\u590d\u5236\u5230\u5171\u4eab\u5b58\u50a8",
             "\u5f00\u59cb\u540e\u53f0\u590d\u5236\u5f55\u50cf\u8bc1\u636e\u5230\u5171\u4eab\u5b58\u50a8",
         )
+        target_dir: Path | None = None
         try:
             writable, message = test_shared_storage_writable(shared_path_text)
             if not writable:
@@ -4785,7 +4754,7 @@ class ShippingMonitorWindow(QMainWindow):
                 safe_source = self._validated_shared_storage_source(source)
                 if safe_source is None or not safe_source.is_file():
                     continue
-                shutil.copy2(safe_source, target_dir / safe_source.name)
+                self._atomic_copy_to_shared(safe_source, target_dir / safe_source.name)
                 copied.append(safe_source.name)
 
             if not copied:
@@ -4795,6 +4764,7 @@ class ShippingMonitorWindow(QMainWindow):
                 f"\u5df2\u590d\u5236\u5230\u5171\u4eab\u5b58\u50a8\uff1a{target_dir}",
             )
         except Exception as exc:  # noqa: BLE001
+            self._record_shared_copy_pending(context, shared_path_text, target_dir, exc)
             self.shared_storage_update.emit(
                 "\u5171\u4eab\u5b58\u50a8\u590d\u5236\u5931\u8d25\uff0c\u5df2\u4fdd\u7559\u672c\u5730\u6587\u4ef6",
                 f"\u5171\u4eab\u5b58\u50a8\u590d\u5236\u5931\u8d25\uff0c\u5df2\u4fdd\u7559\u672c\u5730\u6587\u4ef6\uff1a{exc}",
@@ -4802,6 +4772,73 @@ class ShippingMonitorWindow(QMainWindow):
         finally:
             with self._shared_copy_lock:
                 self._shared_copy_scheduled.discard(copy_key)
+
+    @staticmethod
+    def _atomic_copy_to_shared(source: Path, target: Path) -> None:
+        """Copy to a ``.part`` sibling, then rename so readers never see partial files."""
+        partial = target.with_name(target.name + ".part")
+        try:
+            shutil.copy2(source, partial)
+            os.replace(partial, target)
+        except Exception:
+            try:
+                partial.unlink()
+            except OSError:
+                pass
+            raise
+
+    def _record_shared_copy_pending(
+        self,
+        context: dict[str, object],
+        shared_path_text: str,
+        target_dir: Path | None,
+        error: Exception,
+    ) -> None:
+        pending_path = runtime_root() / "logs" / "shared_storage_pending.json"
+        entry = {
+            "recorded_at": datetime.now().isoformat(timespec="seconds"),
+            "avi_path": str(context.get("avi_path") or ""),
+            "tracking_number": str(context.get("tracking_number") or ""),
+            "shared_storage_path": shared_path_text,
+            "target_dir": str(target_dir) if target_dir is not None else "",
+            "error": str(error),
+        }
+        try:
+            with self._shared_pending_lock:
+                entries: list[dict[str, object]] = []
+                if pending_path.exists():
+                    try:
+                        loaded = json.loads(pending_path.read_text(encoding="utf-8"))
+                    except (OSError, ValueError):
+                        loaded = []
+                    if isinstance(loaded, list):
+                        entries = [item for item in loaded if isinstance(item, dict)]
+                entries.append(entry)
+                entries = entries[-200:]
+                pending_path.parent.mkdir(parents=True, exist_ok=True)
+                temporary = pending_path.with_name(pending_path.name + ".tmp")
+                temporary.write_text(
+                    json.dumps(entries, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+                os.replace(temporary, pending_path)
+            self.add_log(f"共享存储待补传清单已记录：{pending_path}")
+        except Exception as exc:  # noqa: BLE001
+            logging.warning("Could not record shared storage pending copy: %s", exc)
+
+    def _wait_for_shared_storage_copies(
+        self,
+        timeout: float = SHARED_STORAGE_COPY_CLOSE_TIMEOUT_SECONDS,
+    ) -> None:
+        deadline = time.monotonic() + max(0.0, timeout)
+        with self._shared_copy_lock:
+            threads = [thread for thread in self._shared_copy_threads if thread.is_alive()]
+        for thread in threads:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                self.add_log("共享存储复制超过关闭等待时间，仍在后台继续")
+                return
+            thread.join(timeout=remaining)
 
     def _validated_shared_storage_source(self, source: Path) -> Path | None:
         try:
@@ -4908,13 +4945,36 @@ class ShippingMonitorWindow(QMainWindow):
             return
 
         self.last_tracking_number = tracking_number
-        self.tracking_last_seen[tracking_number] = time.monotonic()
+        self._remember_tracking_activity(self.tracking_last_seen, tracking_number)
         self.current_tracking.setText(tracking_number)
         self.add_log(f"\u6536\u5230\u5355\u53f7\uff1a{tracking_number}")
         self._play_success_beep()
         self.process_tracking_number(tracking_number, barcode_received_monotonic)
         self.scan_input.clear()
         self.scan_input.setFocus()
+
+    def _remember_tracking_activity(
+        self,
+        mapping: OrderedDict[str, float],
+        tracking_number: str,
+    ) -> None:
+        mapping[tracking_number] = time.monotonic()
+        mapping.move_to_end(tracking_number)
+
+    def _prune_tracking_memory(self, now: float | None = None) -> None:
+        """Drop tracking-number entries older than the retention window.
+
+        The guards stay process-local on purpose: a restart or shift handover
+        keeps the historical behaviour where the in-memory duplicate memory is
+        refreshed. The ledger remains the durable source for older scans.
+        """
+        cutoff = (time.monotonic() if now is None else now) - TRACKING_MEMORY_RETENTION_SECONDS
+        for mapping in (self.completed_tracking_numbers, self.tracking_last_seen):
+            while mapping:
+                _key, seen = next(iter(mapping.items()))
+                if seen >= cutoff:
+                    break
+                mapping.popitem(last=False)
 
     def should_block_duplicate(self, tracking_number: str) -> tuple[bool, str]:
         if self.config is None:
@@ -4974,10 +5034,7 @@ class ShippingMonitorWindow(QMainWindow):
             return
         self.add_log("after_trial_check: allowed=TRUE")
 
-        if not self.update_disk_status(log_event=False) or not has_min_free_disk_space(
-            self.recordings_dir,
-            self.config.min_free_disk_gb,
-        ):
+        if not self.update_disk_status(log_event=False):
             self.disk_status.setText(TEXT["disk_low"])
             self.add_log(LOW_DISK_BLOCKED_MESSAGE)
             self.add_recent_tracking(tracking_number, TEXT["disk_retry"])
@@ -5039,13 +5096,13 @@ class ShippingMonitorWindow(QMainWindow):
                 )
                 self.add_log(f"Excel \u88ab\u5360\u7528\uff0c\u5df2\u5199\u5165\u5907\u4efd CSV\uff1a{tracking_number}")
                 self.add_log("after_excel_write: success=TRUE target=backup_csv")
-                self.completed_tracking_numbers.add(tracking_number)
+                self._remember_tracking_activity(self.completed_tracking_numbers, tracking_number)
                 self.add_recent_tracking(tracking_number, "Excel\u88ab\u5360\u7528\uff0c\u5df2\u5199\u5165\u5907\u4efdCSV")
             else:
                 self.excel_status.setText(TEXT["excel_ok"])
                 self.add_log(f"Excel\u5199\u5165\u6210\u529f\uff1a{tracking_number}")
                 self.add_log("after_excel_write: success=TRUE")
-                self.completed_tracking_numbers.add(tracking_number)
+                self._remember_tracking_activity(self.completed_tracking_numbers, tracking_number)
                 self.add_recent_tracking(tracking_number, TEXT["recorded_excel_ok"])
         except Exception as exc:
             self.excel_status.setText(TEXT["excel_failed"])
@@ -5139,19 +5196,19 @@ class ShippingMonitorWindow(QMainWindow):
 
         self.config = replace(self.config, duplicate_policy="block_completed_only", duplicate_block_seconds=30)
         self.apply_config_status()
-        self.completed_tracking_numbers.add("DUPLICATE_COMPLETED")
+        self._remember_tracking_activity(self.completed_tracking_numbers, "DUPLICATE_COMPLETED")
         safe_print(f"smoke_duplicate_policy_status => {self.duplicate_policy_status.text()}")
         safe_print(f"smoke_duplicate_completed => {self.should_block_duplicate('DUPLICATE_COMPLETED')}")
 
         self.config = replace(self.config, duplicate_policy="block_within_seconds", duplicate_block_seconds=30)
         self.apply_config_status()
-        self.tracking_last_seen["DUPLICATE_WINDOW"] = time.monotonic()
+        self._remember_tracking_activity(self.tracking_last_seen, "DUPLICATE_WINDOW")
         safe_print(f"smoke_duplicate_window_status => {self.duplicate_policy_status.text()}")
         safe_print(f"smoke_duplicate_window => {self.should_block_duplicate('DUPLICATE_WINDOW')}")
 
         self.config = replace(self.config, duplicate_policy="allow", duplicate_block_seconds=30)
         self.apply_config_status()
-        self.tracking_last_seen["DUPLICATE_ALLOWED"] = time.monotonic()
+        self._remember_tracking_activity(self.tracking_last_seen, "DUPLICATE_ALLOWED")
         safe_print(f"smoke_duplicate_allow_status => {self.duplicate_policy_status.text()}")
         safe_print(f"smoke_duplicate_allow => {self.should_block_duplicate('DUPLICATE_ALLOWED')}")
         QTimer.singleShot(400, self.close)
@@ -5165,7 +5222,7 @@ class ShippingMonitorWindow(QMainWindow):
         try:
             import numpy as np
 
-            base = Path("D:/AI_Projects/99_Temp/shipping-monitor-query-core-test")
+            base = Path(tempfile.mkdtemp(prefix="shipping-monitor-query-core-test-"))
             base.mkdir(parents=True, exist_ok=True)
             avi_path = base / "20260518_235900_YT123456789.avi"
             writer = cv2.VideoWriter(str(avi_path), cv2.VideoWriter_fourcc(*"MJPG"), 10.0, (320, 240))
@@ -5257,10 +5314,14 @@ class ShippingMonitorWindow(QMainWindow):
     def closeEvent(self, event) -> None:
         self._camera_start_cancel_event.set()
         self._stop_barcode_worker()
+        self._stop_disk_status_worker()
         self.stop_lan_query_server(show_message=False)
         if self.fullscreen_preview_window is not None:
             self.fullscreen_preview_window.close()
         self.stop_preview()
+        # stop_preview schedules the last shared-storage copy; wait for it so a
+        # closing window does not silently kill the daemon copy thread.
+        self._wait_for_shared_storage_copies()
         event.accept()
 
 

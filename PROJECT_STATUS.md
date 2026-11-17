@@ -2,17 +2,14 @@
 
 ## Delivery Baseline
 
-Current sealed trial package available in the local workspace (delivery artifact; not versioned):
+The current delivery baseline is the published **v1.0.0** release:
 
-```text
-release\ShippingMonitorGUI_v1.0_trial20260521.zip
-```
+- GitHub Releases (canonical): <https://github.com/nyboyscn-del/ShippingMonitorGUI/releases/tag/v1.0.0>
+- Artifact: `ShippingMonitorGUI_v1.0.0.zip` (`ShippingMonitorGUI\ShippingMonitorGUI.exe` after extraction)
+- SHA256: `524f41e4b75a9c408ea971d62ab75bc557b9aa258aabc257c3196cd4a7cd54ba`
 
-The extracted trial package directory currently present in the local workspace is:
-
-```text
-release\ShippingMonitorGUI_v1.0_trial
-```
+Release packages are published as GitHub Release assets; the versioned repository
+contains source, documentation, and blank templates only.
 
 ## Entry Points
 

@@ -24,8 +24,6 @@ class AppConfig:
     resolution: str
     fps: int
     storage_path: str
-    segment_duration: int
-    segment_on_barcode: bool
     auto_stop_enabled: bool
     auto_stop_timeout: int
     keep_camera_on_timeout: bool
@@ -36,7 +34,6 @@ class AppConfig:
     duplicate_block_seconds: int
     beep_enabled: bool
     excel_file: str
-    license_file: str
     min_free_disk_gb: float
     watchdog_enabled: bool
     watchdog_max_failures: int
@@ -71,8 +68,6 @@ class AppConfig:
     camera_focus_value: int = 0
     camera_autofocus_enabled: bool = True
     barcode_scan_enabled: bool = False
-    enable_camera_barcode_scanner: bool = False
-    barcode_roi_guide_enabled: bool = True
     barcode_roi_use_guide_area: bool = True
     barcode_label_width_mm: int = 76
     barcode_label_height_mm: int = 130
@@ -107,6 +102,9 @@ class AppConfig:
     shared_storage_copy_mp4: bool = True
     shared_storage_copy_label_image: bool = True
     shared_storage_fallback_local: bool = True
+    label_closeup_enabled: bool = True
+    label_snapshot_enabled: bool = True
+    label_roi_use_barcode_roi: bool = True
 
     @property
     def resolution_size(self) -> tuple[int, int]:
@@ -116,10 +114,6 @@ class AppConfig:
     @property
     def excel_path(self) -> Path:
         return resolve_project_path(self.excel_file)
-
-    @property
-    def license_path(self) -> Path:
-        return resolve_project_path(self.license_file)
 
 
 def resolve_project_path(value: str | Path) -> Path:
@@ -178,6 +172,29 @@ def merge_missing_config_fields(config_path: Path, example_path: Path = EXAMPLE_
         else:
             current["duplicate_policy"] = defaults.get("duplicate_policy", "block_completed_only")
         added.append("duplicate_policy")
+
+    # The camera barcode switch used to have a second key. Fold the legacy key
+    # into ``barcode_scan_enabled`` with the same OR semantics the UI used, then
+    # drop it so there is exactly one runtime switch.
+    legacy_barcode_scanner = current.pop("enable_camera_barcode_scanner", None)
+    if legacy_barcode_scanner is not None:
+        if "barcode_scan_enabled" not in current:
+            current["barcode_scan_enabled"] = bool(legacy_barcode_scanner)
+            added.append("barcode_scan_enabled")
+        elif bool(legacy_barcode_scanner) and not bool(current["barcode_scan_enabled"]):
+            current["barcode_scan_enabled"] = True
+            added.append("barcode_scan_enabled")
+        added.append("enable_camera_barcode_scanner_removed")
+
+    # The label close-up guide replaced ``barcode_roi_guide_enabled``.
+    if "barcode_roi_guide_enabled" in current:
+        current.pop("barcode_roi_guide_enabled")
+        added.append("barcode_roi_guide_enabled_removed")
+
+    for dead_key in ("segment_duration", "segment_on_barcode", "license_file"):
+        if dead_key in current:
+            current.pop(dead_key)
+            added.append(f"{dead_key}_removed")
 
     for key, value in defaults.items():
         if key not in current:
@@ -272,9 +289,10 @@ def get_config(config_path: Path = RUNTIME_CONFIG, example_path: Path = EXAMPLE_
     raw.setdefault("shared_storage_copy_mp4", True)
     raw.setdefault("shared_storage_copy_label_image", True)
     raw.setdefault("shared_storage_fallback_local", True)
+    raw.setdefault("label_closeup_enabled", True)
+    raw.setdefault("label_snapshot_enabled", True)
+    raw.setdefault("label_roi_use_barcode_roi", True)
     # Barcode ROI guide settings
-    raw.setdefault("enable_camera_barcode_scanner", False)
-    raw.setdefault("barcode_roi_guide_enabled", True)
     raw.setdefault("barcode_roi_use_guide_area", True)
     raw.setdefault("barcode_label_width_mm", 76)
     raw.setdefault("barcode_label_height_mm", 130)
@@ -290,6 +308,21 @@ def get_config(config_path: Path = RUNTIME_CONFIG, example_path: Path = EXAMPLE_
     valid_keys = {f.name for f in fields(AppConfig)}
     filtered = {k: v for k, v in raw.items() if k in valid_keys}
     return AppConfig(**filtered)
+
+
+def write_config_value(config_path: Path, key: str, value: Any) -> None:
+    """Atomically update a single runtime config key without dropping others."""
+    ensure_config(config_path)
+    with config_path.open("r", encoding="utf-8") as handle:
+        raw: dict[str, Any] = json.load(handle)
+    raw[key] = value
+    temporary = config_path.with_name(f"{config_path.name}.tmp")
+    with temporary.open("w", encoding="utf-8") as handle:
+        json.dump(raw, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, config_path)
 
 
 def ensure_lan_query_token(config_path: Path = RUNTIME_CONFIG) -> str:

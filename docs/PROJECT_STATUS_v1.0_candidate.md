@@ -1,8 +1,11 @@
-# ShippingMonitorGUI 项目状态文档
+# ShippingMonitorGUI 项目状态文档（历史归档）
+
+> **历史文档**：本文档记录的是 v1.0 候选阶段的旧状态，已不再代表当前交付基线。
+> 当前交付基线为 v1.0.0，见根目录 `PROJECT_STATUS.md` 与 GitHub Releases。
 
 ## 当前版本状态
 
-**v1.0_candidate / 未人工验收候选版**
+**v1.0_candidate / 未人工验收候选版（历史）**
 
 > 本版本不标记为正式客户交付包，仅作为候选版存档。
 

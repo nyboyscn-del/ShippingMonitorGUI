@@ -13,6 +13,7 @@ from pathlib import Path
 
 from camera_manager import CameraManager, cv2
 
+import frame_processing
 from safe_print import safe_print
 
 
@@ -27,6 +28,7 @@ _FFMPEG_STATUS_LOGGED: set[str] = set()
 WRITER_FPS_HEADROOM = 0.95
 WRITE_FRAME_MAX_RETRIES = 3
 WRITE_FRAME_RETRY_INTERVAL_SECONDS = 0.05
+DISK_CHECK_INTERVAL_SECONDS = 5.0
 
 
 def sanitize_tracking_number(tracking_number: str) -> str:
@@ -378,6 +380,9 @@ class RecordingManager:
         self.current_tracking_number: str | None = None
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
+        self._writer_lock = threading.Lock()
+        self._abandon_writes = False
+        self.segment_may_be_incomplete = False
         self._config = config
         self._log_callback = log_callback
         self._lock = threading.Lock()
@@ -460,7 +465,10 @@ class RecordingManager:
             )
 
             self._reset_recording_timing(reset_writer_fps=False)
-            self.writer = writer
+            with self._writer_lock:
+                self.writer = writer
+                self._abandon_writes = False
+                self.segment_may_be_incomplete = False
             self.current_video_path = video_path
             self.current_tracking_number = tracking_number
             self._stop_event.clear()
@@ -534,8 +542,15 @@ class RecordingManager:
             try:
                 self._thread.join(timeout=3)
                 if self._thread.is_alive():
+                    # The loop may still be inside writer.write(). Stop accepting
+                    # new frames and let the owning thread release the writer; the
+                    # resulting segment is flagged as possibly incomplete instead
+                    # of being closed underneath the writer.
+                    self._abandon_writes = True
+                    self.segment_may_be_incomplete = True
                     self._emit_recording_log(
-                        "Recording thread join timed out; continuing guarded shutdown.",
+                        "Recording thread join timed out; abandoned further writes "
+                        "and marked segment as possibly incomplete.",
                         warning=True,
                     )
             except Exception as exc:  # noqa: BLE001
@@ -544,20 +559,31 @@ class RecordingManager:
         self._release_writer()
 
     def _release_writer(self) -> None:
-        writer = self.writer
-        if writer is None:
+        if not self._writer_lock.acquire(timeout=3):
+            self.segment_may_be_incomplete = True
+            self._emit_recording_log(
+                "VideoWriter busy during shutdown; deferred release to owner thread "
+                "and marked segment as possibly incomplete.",
+                warning=True,
+            )
             return
         try:
-            self._finalize_recording_timing()
-        except Exception as exc:  # noqa: BLE001
-            self._emit_recording_log(f"Recording finalize failed: {exc}", warning=True)
-        try:
-            writer.release()
-            logging.info("Recording stopped: %s", self.current_video_path)
-        except Exception as exc:  # noqa: BLE001
-            self._emit_recording_log(f"VideoWriter release failed: {exc}", warning=True)
+            writer = self.writer
+            if writer is None:
+                return
+            try:
+                self._finalize_recording_timing()
+            except Exception as exc:  # noqa: BLE001
+                self._emit_recording_log(f"Recording finalize failed: {exc}", warning=True)
+            try:
+                writer.release()
+                logging.info("Recording stopped: %s", self.current_video_path)
+            except Exception as exc:  # noqa: BLE001
+                self._emit_recording_log(f"VideoWriter release failed: {exc}", warning=True)
+            finally:
+                self.writer = None
         finally:
-            self.writer = None
+            self._writer_lock.release()
 
     def _emit_recording_log(self, message: str, warning: bool = False) -> None:
         if warning:
@@ -589,41 +615,42 @@ class RecordingManager:
         self.max_writer_seconds = 0.0
 
     def _write_timed_frame(self, frame, captured_at: float | None = None) -> None:
-        if self.writer is None:
-            return
+        with self._writer_lock:
+            if self.writer is None or self._abandon_writes:
+                return
 
-        now = captured_at if captured_at is not None else time.monotonic()
-        if self.recording_start_monotonic is None:
-            self.recording_start_monotonic = now
-            self.writer.write(frame)
-            self.written_frame_count += 1
-            self.last_written_frame = frame
-            self.last_write_monotonic = now
-            return
+            now = captured_at if captured_at is not None else time.monotonic()
+            if self.recording_start_monotonic is None:
+                self.recording_start_monotonic = now
+                self.writer.write(frame)
+                self.written_frame_count += 1
+                self.last_written_frame = frame
+                self.last_write_monotonic = now
+                return
 
-        elapsed = max(0.0, now - self.recording_start_monotonic)
-        expected_count = int(elapsed * self.writer_fps)
-        if expected_count < self.written_frame_count:
-            self.timeline_dropped_frame_count += 1
-            return
-        need = expected_count - self.written_frame_count
+            elapsed = max(0.0, now - self.recording_start_monotonic)
+            expected_count = int(elapsed * self.writer_fps)
+            if expected_count < self.written_frame_count:
+                self.timeline_dropped_frame_count += 1
+                return
+            need = expected_count - self.written_frame_count
 
-        if need > 0 and self.last_written_frame is not None:
-            max_duplicate_per_call = int(self.writer_fps * 2)
-            duplicate_count = min(need, max_duplicate_per_call)
-            if duplicate_count < need:
-                logging.warning(
-                    "frame duplication capped: need=%s, capped=%s",
-                    need,
-                    duplicate_count,
-                )
-            self._duplicate_last_frame(duplicate_count)
+            if need > 0 and self.last_written_frame is not None:
+                max_duplicate_per_call = int(self.writer_fps * 2)
+                duplicate_count = min(need, max_duplicate_per_call)
+                if duplicate_count < need:
+                    logging.warning(
+                        "frame duplication capped: need=%s, capped=%s",
+                        need,
+                        duplicate_count,
+                    )
+                self._duplicate_last_frame(duplicate_count)
 
-        if self.writer is not None:
-            self.writer.write(frame)
-            self.written_frame_count += 1
-            self.last_written_frame = frame
-            self.last_write_monotonic = now
+            if self.writer is not None:
+                self.writer.write(frame)
+                self.written_frame_count += 1
+                self.last_written_frame = frame
+                self.last_write_monotonic = now
 
     def _duplicate_last_frame(self, duplicate_count: int) -> None:
         if self.writer is None or self.last_written_frame is None or duplicate_count <= 0:
@@ -726,7 +753,9 @@ class RecordingManager:
         try:
             while not self._stop_event.is_set():
                 now = time.monotonic()
-                if now - last_disk_check >= 1:
+                # Disk usage can stall on network shares; checking every five
+                # seconds instead of every second keeps the write loop responsive.
+                if now - last_disk_check >= DISK_CHECK_INTERVAL_SECONDS:
                     last_disk_check = now
                     if not has_min_free_disk_space(self.storage_path, self.min_free_disk_gb):
                         safe_print(LOW_DISK_STOPPED_MESSAGE)
@@ -869,120 +898,24 @@ class RecordingManager:
         }
 
     def _apply_camera_calibration(self, frame):
-        """对帧应用摄像头矫正（亮度/对比度/ROI裁切）"""
-        if self._config is None or cv2 is None:
-            return frame
-        if not getattr(self._config, "camera_calibration_enabled", False):
-            return frame
-        alpha = 1.0 + getattr(self._config, "camera_calibration_contrast", 0) / 100.0
-        beta = float(getattr(self._config, "camera_calibration_brightness", 0))
-        if alpha != 1.0 or beta != 0.0:
-            frame = cv2.convertScaleAbs(frame, alpha=alpha, beta=beta)
-        if getattr(self._config, "camera_calibration_roi_enabled", False):
-            roi_x = int(getattr(self._config, "camera_calibration_roi_x", 0))
-            roi_y = int(getattr(self._config, "camera_calibration_roi_y", 0))
-            roi_w = int(getattr(self._config, "camera_calibration_roi_w", 0))
-            roi_h = int(getattr(self._config, "camera_calibration_roi_h", 0))
-            h, w = frame.shape[:2]
-            if (roi_x >= 0 and roi_y >= 0 and roi_w > 0 and roi_h > 0
-                    and roi_x + roi_w <= w and roi_y + roi_h <= h):
-                frame = frame[roi_y:roi_y + roi_h, roi_x:roi_x + roi_w]
-                # VideoWriter requires the dimensions chosen when it was opened.
-                frame = cv2.resize(frame, self.resolution, interpolation=cv2.INTER_LINEAR)
-        return frame
+        """对帧应用摄像头矫正（与预览共用 frame_processing 实现）。"""
+        return frame_processing.apply_camera_calibration(
+            frame,
+            self._config,
+            target_size=self.resolution,
+        )
 
     def apply_watermark(self, frame, tracking_number: str):
         if cv2 is None:
             return frame
-
-        now_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        lines = [tracking_number or "UNKNOWN", now_text]
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        font_scale = max(0.3, float(self.watermark_font_scale))
-        thickness = max(1, int(round(font_scale * 2)))
-        outline_thickness = thickness + 2
-        line_gap = max(8, int(12 * font_scale))
-        margin = max(16, int(24 * font_scale))
-        color = self._parse_watermark_color(self.watermark_color)
-
-        sizes = [cv2.getTextSize(line, font, font_scale, thickness)[0] for line in lines]
-        block_width = max(width for width, _height in sizes)
-        block_height = sum(height for _width, height in sizes) + line_gap * (len(lines) - 1)
-        x, y = self._watermark_origin(frame.shape[1], frame.shape[0], block_width, block_height, margin)
-
-        # Blend only the text area instead of copying and blending the full video frame.
-        padding = outline_thickness + 2
-        x0 = max(0, x - padding)
-        y0 = max(0, y - padding)
-        x1 = min(frame.shape[1], x + block_width + padding)
-        y1 = min(frame.shape[0], y + block_height + padding)
-        target = frame[y0:y1, x0:x1]
-        overlay = target.copy()
-
-        current_y = y
-        for index, line in enumerate(lines):
-            text_width, text_height = sizes[index]
-            baseline_y = current_y + text_height
-            cv2.putText(
-                overlay,
-                line,
-                (x - x0, baseline_y - y0),
-                font,
-                font_scale,
-                (0, 0, 0),
-                outline_thickness,
-                cv2.LINE_AA,
-            )
-            cv2.putText(
-                overlay,
-                line,
-                (x - x0, baseline_y - y0),
-                font,
-                font_scale,
-                color,
-                thickness,
-                cv2.LINE_AA,
-            )
-            current_y += text_height + line_gap
-
-        cv2.addWeighted(
-            overlay,
-            self.watermark_opacity,
-            target,
-            1 - self.watermark_opacity,
-            0,
-            dst=target,
+        text = str(getattr(self._config, "watermark_text", "") or "").strip()
+        if not text:
+            text = str(tracking_number or "").strip()
+        return frame_processing.apply_watermark(
+            frame,
+            text=text,
+            font_scale=self.watermark_font_scale,
+            color=self.watermark_color,
+            opacity=self.watermark_opacity,
+            position=self.watermark_position,
         )
-        return frame
-
-    def _watermark_origin(
-        self,
-        frame_width: int,
-        frame_height: int,
-        block_width: int,
-        block_height: int,
-        margin: int,
-    ) -> tuple[int, int]:
-        position = self.watermark_position
-        if position == "top_right":
-            return max(margin, frame_width - block_width - margin), margin
-        if position == "bottom_left":
-            return margin, max(margin, frame_height - block_height - margin)
-        if position == "bottom_right":
-            return (
-                max(margin, frame_width - block_width - margin),
-                max(margin, frame_height - block_height - margin),
-            )
-        return margin, margin
-
-    def _parse_watermark_color(self, value: str) -> tuple[int, int, int]:
-        text = (value or "").strip()
-        if text.startswith("#") and len(text) == 7:
-            try:
-                red = int(text[1:3], 16)
-                green = int(text[3:5], 16)
-                blue = int(text[5:7], 16)
-                return blue, green, red
-            except ValueError:
-                pass
-        return 0, 255, 0

@@ -18,6 +18,7 @@ from safe_print import safe_print
 
 
 AUTO_STOP_MESSAGE = "Auto stop recording after idle timeout."
+LEGACY_LICENSE_PATH = PROJECT_ROOT / "config" / "license.json"
 
 
 def setup_logging() -> None:
@@ -99,7 +100,7 @@ def main() -> int:
 
     ensure_runtime_dirs(config)
 
-    license_ok, license_message = validate_license(config.license_path)
+    license_ok, license_message = validate_license(LEGACY_LICENSE_PATH)
     if not license_ok:
         logging.error(license_message)
         safe_print(f"License validation failed: {license_message}")
