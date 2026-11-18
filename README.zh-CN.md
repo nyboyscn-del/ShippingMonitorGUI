@@ -10,9 +10,9 @@ ShippingMonitorGUI 是一个 Windows 桌面工具，用于发货视频监控、�
 
 免安装的 Windows 成品包：
 
-- **GitHub Releases（正式来源）：** [v1.0.0](https://github.com/nyboyscn-del/ShippingMonitorGUI/releases/tag/v1.0.0) — 下载 `ShippingMonitorGUI_v1.0.0.zip`，解压后运行 `ShippingMonitorGUI\ShippingMonitorGUI.exe`。
+- **GitHub Releases（正式来源）：** [v1.0.1](https://github.com/nyboyscn-del/ShippingMonitorGUI/releases/tag/v1.0.1) — 下载 `ShippingMonitorGUI_v1.0.1.zip`，解压后运行 `ShippingMonitorGUI\ShippingMonitorGUI.exe`。
 - **GitCode 国内镜像：** [发行版](https://gitcode.com/nyboys/ShippingMonitorGUI/releases) — 同一个安装包，核验后在镜像侧单独发布。
-- `ShippingMonitorGUI_v1.0.0.zip` 的 SHA256：`524f41e4b75a9c408ea971d62ab75bc557b9aa258aabc257c3196cd4a7cd54ba`
+- `ShippingMonitorGUI_v1.0.1.zip` 的 SHA256：`e8890fe39bbe4ccbc812d9d50e89697ecce6439a2f813b2f4915d15ced9b7f40`
 
 ## 当前入口
 
@@ -63,7 +63,7 @@ python -m unittest discover -s tests -p "test_smoke.py" -v
 
 ## 打包说明
 
-已发布的 v1.0.0 安装包由本公开源码经 `build_exe.bat` 构建，经 GitHub Releases（及 GitCode 镜像）分发。它取代了早期由私有代码树构建的封存试用包 `release\ShippingMonitorGUI_v1.0_trial20260521.zip`，该试用包不对外发布。
+已发布的 v1.0.1 安装包由本公开源码经 `build_exe.bat` 构建，经 GitHub Releases（及 GitCode 镜像）分发。它取代了早期由私有代码树构建的封存试用包 `release\ShippingMonitorGUI_v1.0_trial20260521.zip`，该试用包不对外发布。
 
 `build_exe.bat` 是唯一的正式构建入口：依次执行锁定依赖检查、冒烟测试、PyInstaller 命令行构建和 `tools\check_release_security.py` 发布安全检查。源码树不再维护 `.spec` 文件，历史包装脚本与 spec 已移入 `tools\legacy\`，仅供查阅。
 
